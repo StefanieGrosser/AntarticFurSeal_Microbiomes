@@ -1,0 +1,867 @@
+####################################################################################################################################
+####################################################################################################################################
+###################################                                                              ###################################
+###################################  Antarctic fur seal skin microbiome OTU processing pipeline  ###################################
+###################################                                                              ###################################
+####################################################################################################################################
+####################################################################################################################################
+
+Supplementary Material
+
+"Fur seal microbiota are shaped by the social and physical environment, show mother-offspring similarities and are associated with host genetic quality"
+
+OTU processing pipeline scripts
+
+Stefanie Grosser, Jan Sauer, Anneke J. Paijmans, Barbara A. Caspers, Jaume Forcada, Jochen B. W. Wolf, Joseph I. Hoffman
+
+#############################################################################################################
+###### Analysis of 16S skin microbiome samples from Antarctic fur seals using USEARCH/UPARSE pipeline  ######
+###### 48 Mother-offspring samples (96 total)														   ######
+###### 300 bp forward and reverse reads from Illumina MiSeq run 									   ######
+###### 3.0 Gb of rawdata									   										   ######
+###### Stefanie Grosser, July 2017, LMU Munich														   ######
+###### Using USEARCH version 9.2.64 (latest version on UPPMAX)										   ######
+#############################################################################################################
+
+
+## Rawdata location
+rawdata_path=/PATH/TO/MicrobiomeAnalysis/rawdata/
+
+##################################################################################
+## 1. QC files with fastx_info 
+## (QC was already done with FastQC v0.7.2, so this part is optional)
+##################################################################################
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/rawdata/
+outdir=/PATH/TO/MicrobiomeAnalysis/fastq_info/
+
+## Run fastx_info for all files in the input directory
+
+for fq in ${indir}*.fastq
+do
+  usearch -fastx_info $fq -output ${outdir}$fq
+done
+
+## Inspect results as described in the UPARSE manual
+
+
+##################################################################################
+## 2. Merge forward and reverse reads
+## Forward and reverse reads for each sample are merged and merged sequences from
+## all samples are pooled into a single file for subsequent analyses.
+## QC indicates that read quality is not very good, hence merging is done with 
+## relaxed parameters 
+## Shell script name: uparse_readMerging_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM core
+##################################################################################
+ 
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/rawdata/
+tmpdir=/scratch/$SLURM_JOB_ID/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+
+## Files need to be uncompressed for input into usearch.
+## To avoid saving uncompressed files in a data directory (takes up too much space),
+## save them to the scratch folder (temporary directory only accessible in the current session).
+
+for fqs in ${indir}*.fastq.gz
+do
+  filename=$(basename "$fqs" ".fastq.gz")
+  gunzip -c $fqs > ${tmpdir}${filename}.fastq
+  echo ${tmpdir}${filename}.fastq
+done
+
+## Check if all files have been decompressed. Compare number of rawdata files with uncompressed files.
+## Exit script if numbers are not equal.
+compressedFiles=$(ls ${indir}*.fastq.gz | wc -l)   #192
+uncompressedFiles=$(ls ${tmpdir}*.fastq | wc -l) 
+
+if [ $uncompressedFile != $compressedFiles ] ; then
+  exit 1
+else
+  echo "All files have been uncompressed."  
+fi
+
+
+## Run usearch read merging (parameters explained below)
+usearch -fastq_mergepairs ${tmpdir}*R1*.fastq -fastqout ${outdir}AFS_merged_all.fq -relabel @ -report ${outdir}AFS_mergingReport.txt -tabbedout ${outdir}AFS_mergingTable.txt -fastq_nostagger -fastq_trunctail 5 -fastq_maxdiffpct 25 -fastq_maxdiffs 30 -fastq_minmergelen 380 -fastq_maxmergelen 520
+
+## Paramters explained
+#-relabel @ 					## adds sample identifiers to each read label (useful when pooling samples)
+#-fastq_nostagger				## will remove pairs for which the entire biological sequence (but not the adapter overhangs) aligns. For 300 bp paired-end some unaligned biological sequence is expected (only ~130-140bp overlap)
+#-fastq_trunctail 5 			## truncate 3' ends of each read at first Q score with <= this value (default 2)
+#-fastq_maxdiffpct 25 			## maximum percent difference of aligned regions (default 10)
+#-fastq_maxdiffs 30 			## maximum number of mismatches in alignment (default 5)
+#-fastq_minmergelen 380 		## minimum length of merged sequence; filters artefacts (sequences are expected to be around 460 bp long)
+#-fastq_maxmergelen 520			## maximum length of merged sequence; filters artefacts
+
+## Other options for troubleshooting
+#-tabbedout 					## outputs a table with merging results for each read
+#-alnout 						## outputs human readable alignment
+
+
+## Extract merging information for each sample
+echo $(less AFS_mergingReport.txt | grep "Relabel" | awk '{print $3}') > sampleIDs.txt
+echo $(less AFS_mergingReport.txt | grep "pairs merged" |  awk '{print $1 "\t" $3 "\t" $6}') > mergedInfo.txt
+
+
+
+##################################################################################
+## 3. Primer trimming
+## Can be done in usearch using the -fastx_truncate command with -stripleft 17 and
+## -stripright 21 options but this might leave some artefacts if primers are 
+## not exactly positioned at the read ends. 
+## Use cutadapt instead. Trim forward and reverse primers in separate steps.
+## Shell script name: cutadapt_trimPrimers_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM core
+##################################################################################
+
+
+#!/bin/bash -l
+#SBATCH -t 10:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load cutadapt/1.9.1
+module load Fastx/0.0.14
+
+## Define input und output paths and files
+tmpdir=/scratch/$SLURM_JOB_ID/
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+seqs=AFS_merged_all.fq
+
+
+seq_name=$(basename "$seqs" ".fq")
+
+## First, trim anchored 5' forward primer. FPf  (forward primer forward) will be found in normal reads, 
+## RPf (reverse primer forward) will be found in reverse complemented forward reads.
+## Untrimmed sequences will be saved to a file in each step, to check them afterwards. 
+## The first output file will be saved to the scratch directory as it is not needed later. 
+## The {name} option in the output file will produce separate files for each primer defined with FPf= and RPf=.
+cutadapt -g FPf=^CCTACGGGNGGCWGCAG -g RPf=^GACTACHVGGGTATCTAATCC -e 0.2 --overlap 10 --untrimmed-output ${tmpdir}${seq_name}_untrimmed_F.fastq -o ${tmpdir}${seq_name}_{name}.fastq ${indir}${seqs}
+
+## reverse complement the detected rev comp reads with Fastx
+inseq=${tmpdir}${seq_name}_RPf.fastq
+seq_name=$(basename "$inseq" "_RPf.fastq")
+fastx_reverse_complement -v -i ${inseq} -o ${tmpdir}${seq_name}_RPf_rc.fastq
+
+## Concatenate the files from the forward reads and the reverse complemented reads for step two of the trimming. 
+## If-statements check if both files are present or only one (if no rev comp reads were detected).
+if [ -f "${tmpdir}${seq_name}"_FPf.fastq ] && [ -f "${tmpdir}${seq_name}"_RPf_rc.fastq ]
+then
+cat "${tmpdir}${seq_name}"_FPf.fastq "${tmpdir}${seq_name}"_RPf_rc.fastq > "${tmpdir}${seq_name}"_forwardTrim1.fastq
+elif [ -f "${tmpdir}${seq_name}"_FPf.fastq ] && [ ! -f "${tmpdir}${seq_name}"_RPf_rc.fastq ]
+then
+cat "${tmpdir}${seq_name}"_FPf.fastq > "${tmpdir}${seq_name}"_forwardTrim2.fastq
+fi
+
+
+seq=${tmpdir}${seq_name}_forwardTrim*.fastq
+echo ${seq}
+seq_name=$(basename "$seq" "_forwardTrim*.fastq")
+
+## Second, trim anchored 3' reverse primer. FPf will be found in rev comp reads from step above, RPrc (reverce primer reverse complement)
+## will be found in all FPf reads from step above.
+## Untrimmed sequences will be saved to a file in each step, to check them afterwards. 
+## This time only one output file for both primers is created (no need for rev comp in this step).
+cutadapt -g FPf=^CCTACGGGNGGCWGCAG -a RPrc=GGATTAGATACCCBDGTAGTC$ -e 0.2 --overlap 10 --untrimmed-output ${tmpdir}${seq_name}_untrimmed_R.fastq -o ${tmpdir}${seq_name}_primersTrimmed.fastq ${seq}
+
+# Copy the final files from scratch directory to the output directory .
+cp ${tmpdir}${seq_name}_primersTrimmed.fastq ${outdir}
+cp ${tmpdir}${seq_name}_untrimmed_F.fastq ${outdir}
+cp ${tmpdir}${seq_name}_untrimmed_R.fastq ${outdir}
+
+
+
+##################################################################################
+## 4. Filter low quality sequences
+## Expected error filtering with expected error threshold recommended in UPARSE
+## pipeline ee=1.0. A higher threshold (i.e. 2) can be used if too many reads get 
+## discarded, however, this may increase the number of wrong OTUs. Might be ok when
+## using singleton filtering.
+## Shell script name: uparse_qualityFiltering_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM core
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 5:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+inseqs=AFS_merged_all_primersTrimmed.fastq
+
+## Run usearch filtering step
+usearch -fastq_filter ${indir}${inseqs} -fastq_maxee 1.0 -fastqout ${outdir}AFS_merged_all_qualFiltered.fastq
+
+
+##################################################################################
+## 5. Dereplication to retain only unique sequences
+## Only exact matches over the full length of two sequences will be considered.
+## Shell script name: uparse_dereplicateSeqs_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM core
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 5:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+inseqs=AFS_merged_all_qualFiltered.fastq
+
+## Run uparse dereplication step
+usearch -fastx_uniques ${indir}${inseqs} -fastqout ${outdir}AFS_merged_all_uniques.fastq -sizeout -strand both -relabel Uniq
+
+#-sizeout 			## size annotation will be added to the sequence header (must be specified for OTU clustering)
+#-strand both 		## will match reverse complement sequences
+#-relabel			## relabel the unique sequences (default is name of the representative sequence)
+
+
+
+##################################################################################
+## 6. Generate 97% OTUs
+## OTU: all pairs of OTUs are >97% identical to each other.
+## Chimeras are filtered with the commands, thus no extra chimera filtering steps 
+## are necessary. Size labels must pe present in the sequence headers. Singletons 
+## are also discarded when using the default settings (-minsize 2)
+## Shell script name: uparse_clusterOTUs_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM core
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 10:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+inseqs=AFS_merged_all_uniques.fastq
+otus=AFS_merged_all_otus.fasta
+
+## Command for clustering 97% OTUs
+usearch -cluster_otus ${indir}${inseqs} -otus ${outdir}${otus} -uparseout ${outdir}AFS_merged_all_otus_table.txt -relabel Otu -minsize 2 
+
+#-relabel 			## relabel OTUs (OTU identifiers in the labels are required for making an OTU table)
+#-uparseout			## file documenting how the input sequences were classified (Otu, match, or chimera)
+
+ 
+##################################################################################
+## 7.Classify OTUs
+## Align sequences against a database to classify them and check for unspecific
+## targets. Use only well annotated and currated databases, not the full databases
+## as these are mostly based on predictions, which adds more uncertainty and error
+## to the classification.
+## Shell script name: uparse_classifyOTUs_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM core
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 10:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+dbdir=/PATH/TO/MicrobiomeAnalysis/Databases/
+otus=AFS_merged_all_otus.fasta
+rdp=rdp_16s_v16_sp.fa
+otusrdp=AFS_merged_all_otus_RDPclassified.sintax
+
+
+## Create a udb database format (indexed) from fasta which allows for faster loading 
+usearch -makeudb_sintax ${dbdir}${rdp} -output ${dbdir}rdp_16s_v16_sp.udb
+
+## Database search. In the tabbedout file the first three fields are (1) query sequence label, (2) prediction with boostrap values, 
+## and (3) strand. If the -sintax_cutoff option is given then predictions are written a second time after applying the confidence 
+## threshold, keeping only ranks with high enough confidence.
+
+usearch -sintax ${indir}${otus} -db ${dbdir}rdp_16s_v16_sp.udb -tabbedout ${outdir}${otusrdp} -strand both -sintax_cutoff 0.8
+
+## AFS_merged_all_otus_RDPclassified.sintax --> AFSmicrobiome_SI_otuRDPclassification_Rinput_DatasetS7.sintax (Additional Dataset S7)
+
+
+## Look for OTUs with lower than 1.0 confidence at domain level in the sintax file to check for non 16S
+## Copy OTU ids to a new file. Commands run from the terminal.
+cd /PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+less AFS_merged_all_otus_RDPclassified.sintax | grep -v "d:Bacteria(1.0000)" | awk '{print $1}' > lowConfidenceDomainOTUlist.txt
+
+## Look for OTUs with lower than 1.0 confidence at phylum level in the sintax file to check for non 16S
+## Copy OTU ids to a new file.
+less AFS_merged_all_otus_RDPclassified.sintax | grep -Ev "p:.*?(1.0000)" | awk '{print $1}' > lowConfidencePhylumOTUlist.txt
+
+## Copy OTU sequences to a new file. 
+while read p; do
+  	less AFS_merged_all_otus.fasta | grep -A6 ">$p$" >> lowConfidenceDomainOTUs.fasta
+done <lowConfidenceDomainOTUlist.txt
+
+while read p; do
+  	less AFS_merged_all_otus.fasta | grep -A6 ">$p$" >> lowConfidencePhylumOTUs.fasta
+done < lowConfidencePhylumOTUlist.txt
+
+
+## Blast OTU sequences against NCBI nt and exclude all non-bacterial sequences from OTU list.
+## Using blast+ tools with locally stored database.
+## Shell script name: blast_blastLowConfidenceOTUs_AFSmicrobiome.sh
+## The analysis is run on four 8GB RAM cores
+
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 4 
+
+module load bioinfo-tools
+module load blast/2.6.0+
+
+## Define input und output paths and files
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+dbdir=/PATH/TO/blast_databases/
+otus=lowConfidencePhylumOTUs.fasta
+otu_name=$(basename "$otus" ".fasta")
+
+## Run blast search
+blastn -db ${dbdir}nt -evalue 1e-20 -num_threads 4 -max_target_seqs 1 -dust yes -outfmt '6 qseqid sseqid evalue bitscore qstart qend sstart send length pident gapopen sgi sacc staxids sscinames stitle' -query ${indir}${otus} -out ${outdir}${otu_name}_Blast_nt_fmt6.txt
+
+
+## Look for OTUs with Chloroplast classification in the sintax file.
+## Copy OTU ids to a new file. Commands run from the terminal.
+
+cd /PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+less AFS_merged_all_otus_RDPclassified.sintax  | grep "c:Chloroplast" > ChloroplastOTUlist.txt
+
+## Make a list of OTUs to be removed and use Usearch -fastx_getseqs command with -notmatched option to filter out 
+## sequences on the list. For matching the labels a newline character has to follow immediately after the label.
+## Shell script name: uparse_filterNon16Sotus_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+oturemove=OTUsToBeRemovedList.txt
+otunotkeep=removedOTUs.fasta
+otukeep=AFS_merged_all_otus_filteredFinal.fasta
+
+
+usearch -fastx_getseqs ${indir}${otus} -labels ${indir}${oturemove} -notmatched ${outdir}${otukeep} -fastaout ${outdir}${otunotkeep}
+
+
+##################################################################################
+## 8. Generate OTU table 
+## Sequences are mapped to the final set of OTUs with 97% identity. Mapped are  
+## sequences from step after merging and trimming, and before quality filtering.
+## Shell script name: uparse_generateOTUtable_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+inseqs=AFS_merged_all_primersTrimmed.fastq
+otus=AFS_merged_all_otus_filteredFinal.fasta
+otutable=AFS_merged_all_OTUtable_final.txt
+otutabstats=AFS_merged_all_OTUtable_statsReport_final.txt
+
+
+usearch -usearch_global ${indir}${inseqs} -db ${indir}${otus} -strand plus -id 0.97 -otutabout ${outdir}${otutable}
+
+
+#-strand plus		## required for nucleotide sequences
+#-id 0.97			## identity threshold
+#-otutabout			## QIIME tabbed format (other formats are available)
+
+
+## The -otutab_stats command generates statistics for the OTU table (e.g. reads per sample)
+usearch -otutab_stats ${indir}${otutable} -output ${outdir}${otutabstats}
+
+
+##################################################################################
+## 9. Trimming OTU table 
+## Remove the individuals with very few reads. Use statistics output from
+##  -otutab_stats command to find a cutoff. Only two individuals have less than
+## 10000 reads mapped to OTUs. These are removed. Trim OTU table so that low  
+## frequency OTUs are removed (likely sequencing errors, cross talk etc.).
+## Shell script name: uparse_trimOTUtable_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+otutrimtable=AFS_merged_all_OTUtable_final_trimmed.txt
+
+
+usearch -otutab_trim ${indir}${otutable} -min_sample_size 10000 -min_otu_freq 0.00005 -output ${outdir}${otutrimtable}
+
+#-min_sample_size 10000 		## trimming OTUs that have less than 10000 reads mapped to them.
+#-min_otu_freq 0.00005  		## trimming OTUs that have a frequency lower than 0.005% as suggested in Bokulich et al. 2015.
+
+## Additionally create the OTU table only trimming of OTUs with frequency lower than 0.005% and keeping the low read individuals for some initial overall stats
+## The same OTUs are retained as in the trimming procedures above
+otutrimtable_freqOnly=AFS_merged_all_OTUtable_final_trimmed_allSamples.txt
+
+usearch -otutab_trim ${indir}${otutable} -min_otu_freq 0.00005 -output ${outdir}${otutrimtable_freqOnly}
+
+## Generate a new statistics file
+otutabtrimstats=AFS_merged_all_OTUtable_statsReport_final_trimmed.txt
+
+usearch -otutab_stats ${indir}${otutrimtable} -output ${outdir}${otutabtrimstats}
+
+## Optional:
+## Normalise OTU table to account for different sequencing depth for all samples. 
+## The adjusted count is calculated as new = (old * sample_size) / total where total is the total number of reads in the sample.
+otutabtrimnorm=AFS_merged_all_OTUtable_final_trimmed_normalised10000.txt
+
+usearch -otutab_norm ${indir}${otutrimtable} -sample_size 10000 -output ${outdir}${otutabtrimnorm}
+
+
+## AFS_merged_all_OTUtable_final_trimmed_allSamples.txt --> AFSmicrobiome_SI_OTUtable_final_trimmed_allSamples_Rinput_DatasetS9.txt (Additional Dataset S9)
+
+
+##################################################################################
+## 10. Calculate diversity indeces
+## Alpha diversity indeces can be calculated in UPARSE. Calculate Jost index 
+## of order q= 0, 1, and 2 (the effective number of species based on Hill numbers). 
+## Higher values of q give lower weights to low-abundance species. q=0 equals 
+## richness, q=1 equals  Shannon entropy, and q=2 equals simpson index. 
+## See Chao et al. 2010.
+## Shell script name: uparse_alphaDiversity_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+## Normalised trimmed tables with 94 individuals
+otutabtrimnorm=AFS_merged_all_OTUtable_final_trimmed_normalised10000.txt
+## Non-normalised table with all samples
+otutrimtable_freqOnly=AFS_merged_all_OTUtable_final_trimmed_allSamples.txt
+
+OTUjost0norm=AFS_merged_all_OTUtable_alphaDivJost0_normalised.txt
+OTUjost1norm=AFS_merged_all_OTUtable_alphaDivJost1_normalised.txt
+OTUjost2norm=AFS_merged_all_OTUtable_alphaDivJost2_normalised.txt
+
+OTUjost0all=AFS_merged_all_OTUtable_alphaDivJost0_allSamples.txt
+OTUjost1all=AFS_merged_all_OTUtable_alphaDivJost1_allSamples.txt
+OTUjost2all=AFS_merged_all_OTUtable_alphaDivJost2_allSamples.txt
+
+
+## Calculate diversity indeces
+usearch -alpha_div ${indir}${otutabtrimnorm} -output ${outdir}${OTUjost0norm} -metrics jost -jostq 0
+usearch -alpha_div ${indir}${otutabtrimnorm} -output ${outdir}${OTUjost1norm} -metrics jost -jostq 1
+usearch -alpha_div ${indir}${otutabtrimnorm} -output ${outdir}${OTUjost2norm} -metrics jost -jostq 2
+
+usearch -alpha_div ${indir}${otutrimtable_freqOnly} -output ${outdir}${OTUjost0all} -metrics jost -jostq 0
+usearch -alpha_div ${indir}${otutrimtable_freqOnly} -output ${outdir}${OTUjost1all} -metrics jost -jostq 1
+usearch -alpha_div ${indir}${otutrimtable_freqOnly} -output ${outdir}${OTUjost2all} -metrics jost -jostq 2
+
+
+
+## Optional:
+## Try calculating alpha diversity with rarefied OTU table from qiime single_rarefaction.py script.
+## Shell script name: qiime_rarefy_alphaDiversity_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load Qiime/1.9.1
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+otutrimtable_freqOnly=AFS_merged_all_OTUtable_final_trimmed_allSamples.txt
+
+
+# Calculate rarefied table. Input classic format from usearch, output biom format. 
+single_rarefaction.py -i ${indir}${otutrimtable_freqOnly} -o ${outdir}AFS_merged_all_OTUtable_final_trimmed_raref10000.biom -d 10000
+
+# Convert biom format table back to classic format for usearch.
+biom convert -i ${indir}AFS_merged_all_OTUtable_final_trimmed_raref10000.biom -o ${outdir}AFS_merged_all_OTUtable_final_trimmed_raref10000.txt --to-tsv 
+
+# Run alpha diversity calculation but manually remove header line from file first.
+usearch -alpha_div ${indir}AFS_merged_all_OTUtable_final_trimmed_raref10000.txt -output ${outdir}OTUjost1_raref.txt -metrics jost -jostq 1
+
+## AFS_merged_all_OTUtable_final_trimmed_raref10000.txt --> AFSmicrobiome_SI_OTUtable_final_trimmed_raref10000_Rinput_DatasetS10.txt (Additional Dataset S10)
+## --> AFSmicrobiome_SI_alphaDiversity_Rinput_DatasetS12.txt (Additional Dataset S12)
+
+##################################################################################
+## 10a. Calculate alpha diversity (jost1) from multiple rarefied tables to be used
+## to estimate uncertainty for the heterozygosity alpha correlations. 
+## Shell script name: qiime_multiRarefy_alphaDiversity_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load Qiime/1.9.1
+module load usearch/9.2.64
+
+
+## Define input und output paths 
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+## Original trimmed OTU table
+otutrimtable_freqOnly=AFS_merged_all_OTUtable_final_trimmed_allSamples.txt
+
+
+## Calculate rarefied tables. Input classic format from usearch, output biom format. Rarefies table to 10000 reads per sample. Outputs 100 rarefied tables.
+multiple_rarefactions_even_depth.py -i ${indir}${otutrimtable_freqOnly} -o ${outdir} -d 10000 -n 100
+
+
+## Convert biom format tables back to classic format for usearch.
+for i in ${outdir}AFS_merged_all_OTUtable_final_trimmed_raref10000_*.biom ; do
+	name=$(basename "$i" ".biom")
+	biom convert -i ${i} -o ${outdir}${name}.txt --to-tsv 
+done	
+
+
+## Run alpha diversity calculation for each file (remove Qiime header line from file).
+for i in ${outdir}AFS_merged_all_OTUtable_final_trimmed_raref10000_*.txt ; do
+	number=$(echo $i | cut -d "." -f 1 | cut -d "_" -f 8)		# get the file number
+	sed -i 1d $i 												# removes Qiime header line
+	sed -i 's/^#//' $i 											# removes the "#" character from the table header
+	sed -i 's/\.0//g' $i  										# remove all ".0" after the OTU number (Qiime outputs 1 decimal point)
+	usearch -alpha_div ${i} -output ${outdir}OTUjost1_raref_${number}.txt -metrics jost -jostq 1
+done
+
+## Clean up the alpha diversity output table.
+for i in ${outdir}OTUjost1_raref*; do 
+	number=$(echo $i | cut -d "." -f 1 | cut -d "_" -f 3)	# get the file number
+	sed -i 1,2d $i 											# remove the first two usearch header lines of the file
+	sed -i "s/jost/jost_${number}/" $i						# change "jost" to "jost_{number of the file}"
+done	
+
+
+## Combine diversity alpha estimates from all files into a single file
+paste ${outdir}OTUjost1_raref_* | awk '{ for (i=3;i<=NF;i+=2) $i="" } 1' > ${outdir}All_OTUjost1_MultiRaref100.txt
+
+
+
+## All_OTUjost1_MultiRaref100.txt --> AFSmicrobiome_SI_alphaDiversityMultiRaref_Rinput_DatasetSX.txt (Additional Dataset SX)
+
+
+##################################################################################
+## 10b. Calculate alpha diversity (jost1) based only on OTUs belonging to the four 
+## dominant phyla (Proteobacteria, Bacteroidetes, Firmicutes, Actinobacteria = 613 OTUs)
+## The document MainPhylaOtuList.txt was created in R.
+## Shell script name: uparse_alphaDiversity_mainPhyla_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+
+## Define input und output paths 
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/FinalFiles/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/FinalFiles/DiversityCalulations/DiversityMainPhylaAnalysis/
+## Original trimmed OTU table
+otutrimtable_freqOnly=AFS_merged_all_OTUtable_final_trimmed_allSamples.txt
+## Lists containing the core microbiome OTUs. 
+mainphyla=MainPhylaOtuList.txt
+
+## Define names of the new output OTU tables without the core microbiome
+mainphyla_otu=AFS_merged_all_OTUtable_final_trimmed_allSamples_mainPhyla.txt
+
+## Remove the core microbiome OTUs on the list from the trimmed OTU table 
+head -n 1 ${indir}${otutrimtable_freqOnly} > ${outdir}${mainphyla_otu}
+grep -wf ${outdir}${mainphyla} ${indir}${otutrimtable_freqOnly} >> ${outdir}${mainphyla_otu}
+
+## Define names of the diversity calculation output files
+OTUjost1all_mainphyla=AFS_merged_all_OTUtable_alphaDivJost1_allSamples_mainphyla.txt
+
+## Calculate diversity index
+usearch -alpha_div ${outdir}${mainphyla_otu} -output ${outdir}${OTUjost1all_mainphyla} -metrics jost -jostq 1
+
+## AFS_merged_all_OTUtable_alphaDivJost1_allSamples_mainphyla.txt --> AFSmicrobiome_SI_alphaDiversity_MainPhyla_Rinput_DatasetS13.txt (Additional Dataset S13)
+
+##################################################################################
+## 11. Curate fasta and sintax files to retain only the final OTUs from the trimmed 
+## table.
+## Shell script name: uparse_FileCuration_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+## Get all OTU ids in the fasta files. Commands are run in the terminal.
+cd /PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+less AFS_merged_all_otus_filteredFinal.fasta | grep ">Otu" | sed s/\>// | awk '{print $1}' | sort > OTUids_all_otus_filteredFinal.txt
+
+## Get all IDs left in the OTU tables after trimming
+less AFS_merged_all_OTUtable_final_trimmed.txt | awk -F "\t" '{print $1}' | tail -n +2 | sort > filteredOTUtab_names.txt 
+
+## Compare IDs from both files and save the differences to new file
+comm -23 OTUids_all_otus_filteredFinal.txt FinalFiles/filteredOTUtab_names.txt > differencesOTUs.txt
+
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load usearch/9.2.64
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+otus=AFS_merged_all_otus_filteredFinal.fasta
+trimmedotus=AFS_merged_all_otus_filteredFinal_trimmed.fasta
+oturemove=differencesOTUs.txt
+tmpdir=/scratch/$SLURM_JOB_ID/
+
+## Save only sequences in the trimmed OTU table to a new fasta file
+usearch -fastx_getseqs ${indir}${otus} -labels ${indir}${oturemove} -notmatched ${outdir}${trimmedotus} 
+
+
+
+##################################################################################
+## 12. Align final OTUs and build phylogenic tree for UniFrac distance calculation
+## Use QIIME PyNAST or MUSCLE to build alignment and build the tree with FastTree.
+## PyNAST aligns sequences to an existing database, MUSCLE produces denovo alignment. 
+## Make alignments with and without an outgroup. AS outgroup sequence use an archaeal 
+## sequence.
+## Shell script name: qiime_BuildAligments_AFSmicrobiome.sh
+## Shell script name: qiime_BuildPhylogeny_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+## Alignment with Pynast against the Greengenes DB
+## Script  qiime_BuildAligments_AFSmicrobiome.sh:
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load Qiime/1.9.1
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+trimmedotus=AFS_merged_all_otus_filteredFinal_trimmed_outgroup.fasta
+
+## Align the sequences with PyNAST 
+align_seqs.py -i ${indir}${trimmedotus} -m pynast -o ${outdir}
+## Resulting alignment file is named
+pynastalign=AFS_merged_all_otus_filteredFinal_trimmed_outgroup_aligned.fasta
+
+## Filter positions that are gaps in all sequences.
+filter_alignment.py -i ${outdir}${pynastalign} -s -o ${outdir}
+# -s removes the standard filter mask, which didn't seem to work properly
+pynastFiltered=AFS_merged_all_otus_filteredFinal_trimmed_outgroup_pynastAligned_filtered.fasta
+
+## Denovo alignment with MUSCLE
+align_seqs.py -i ${indir}${trimmedotus} -m muscle -o ${outdir}
+## Resulting alignment file is named
+muscle=AFS_merged_all_otus_filteredFinal_trimmed_MuscleAligned.fasta
+
+
+## Build phylogenetic tree with FastTree implemented in QIIME.
+
+seqs=(${indir}${muscle} ${indir}${pynastFiltered})
+
+for seq in "${seqs[@]}"; do
+	sbatch ${indir} qiime_BuildPhylogeny_AFSmicrobiome.sh $seq
+done	
+
+
+## Script  qiime_BuildPhylogeny_AFSmicrobiome.sh:
+
+#!/bin/bash -l
+#SBATCH -t 1-00:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load Qiime/1.9.1
+
+## Define input und output paths and files
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+
+alignin=$1
+
+make_phylogeny.py -i ${indir}${alignin} -o ${outdir}
+
+--> AFSmicrobiome_SI_outgroup_pynastAligned_filtered_Rinput_DatasetS14.tre (Additional Dataset S14)
+
+
+##################################################################################
+## ** Extra analysis for PICRUSt. Metagenome analysis predicted from 16S. 
+## Predicts metagenomes from closed-reference 16S OTUs. OTUs have to be picked new 
+## against a reference database. Use QIIME to do this following the PICRUSt tutorial. 
+## Shell script name: qiime_referenceOTUs_AFSmicrobiome.sh
+## The analysis is run on one 8GB RAM cores
+##################################################################################
+
+## Take as input the merged and primer trimmed sequences from USEARCH
+## First, convert fastq to fasta. 
+
+#!/bin/bash -l
+#SBATCH -t 1:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load Fastx/0.0.14
+module load Qiime/1.9.1
+
+indir=/PATH/TO/MicrobiomeAnalysis/uparseAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/PicrustAnalysis/
+inseqs=AFS_merged_all_primersTrimmed.fastq
+outseqs=AFS_merged_all_primersTrimmed.fasta
+
+fastq_to_fasta -n -i ${indir}${inseqs} -o ${outdir}${outseqs}
+
+# Change the name label from >M10.1 to >M10_1 to be compatible with QIIME requirements
+sed 's/\./\_/' ${outdir}AFS_merged_all_primersTrimmed.fasta > ${outdir}AFS_merged_all_primersTrimmed_QiimeIn.fasta
+
+
+## Perform closed-reference OTU picking
+## Pick OTUs at 97% identity against the Greengenes database version gg_13_8_otus.
+infile=AFS_merged_all_primersTrimmed_QiimeIn.fasta
+outfile=AFS_merged_all_primersTrimmed_closedRefOTUS.biom
+
+pick_closed_reference_otus.py -i ${outdir}${infile} -o ${outdir}${outfile} -f
+
+
+## Filter the biom table by excluding all samples with no read mapped and OTUs that have less
+## than 0.005% of all reads mapped to them. Finally, summarise the biom table
+biomtab=AFS_merged_all_primersTrimmed_closedRefOTUS.biom
+biomtab_filtered=AFS_merged_all_primersTrimmed_closedRefOTUS_filtered.biom
+biomtab_filtered2=AFS_merged_all_primersTrimmed_closedRefOTUS_filtered2.biom
+biomsum2=AFS_merged_all_primersTrimmed_closedRefOTUS_filtered2_summary.txt
+
+## Filter samples with no reads mapped (should be none)
+filter_samples_from_otu_table.py -i ${indir}${biomtab} -o ${outdir}${biomtab_filtered} -n 1
+## Filter OTUs that have less than 0.005% of reads mapped
+filter_otus_from_otu_table.py -i ${indir}${biomtab_filtered} -o ${outdir}${biomtab_filtered2} --min_count_fraction 0.00005 
+## Summarise the table
+biom summarize-table -i ${indir}${biomtab_filtered2} -o ${outdir}${biomsum2}
+
+
+## Additionally create a file with rarefied counts to account for the uneven sequencing depth (recommended by PICRUSt)
+
+indir=/proj/b2014050/nobackup/private/MicrobiomeAnalysis/PicrustAnalysis/
+outdir=/proj/b2014050/nobackup/private/MicrobiomeAnalysis/PicrustAnalysis/
+infile=AFS_merged_all_primersTrimmed_closedRefOTUS_filtered2.biom
+
+# Calculate rarefied table. Rarefy to 3117, which is the lowest depth according to the summary file.
+single_rarefaction.py -i ${indir}${infile} -o ${outdir}AFS_merged_all_primersTrimmed_closedRefOTUS_filtered2_rarefied.biom -d 3117
+
+
+##################################################################################
+
+## The actual PICRUSt analysis was run on the web-based Galaxy server
+## http://galaxy.morganlangille.com/
+## Using GG version 13.5 (13.8 used for the OTU picking is only a minor update 
+## and compatible with 13.5)
+
+1. Upload the .biom table AFS_merged_all_primersTrimmed_closedRefOTUS_filtered2_rarefied.biom.
+2. Run Normalize by Copy Number.
+3. Predict Metagenome using KEGG Orthologs.
+4. Categorize by Function to hierarchy level 3.
+5. Download the resulting .biom table
+
+
+## Convert the biom file to a stamp .sfp profile format 
+## This python script from Microbiome Helper requires the biom package (this is loaded with QIIME)
+## (https://github.com/LangilleLab/microbiome_helper/blob/master/biom_to_stamp.py)
+## The resulting file can be analysed with STAMP
+
+#!/bin/bash -l
+#SBATCH -t 1:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load Qiime/1.9.1
+
+indir=/PATH/TO/MicrobiomeAnalysis/PicrustAnalysis/
+outdir=/PATH/TO/MicrobiomeAnalysis/PicrustAnalysis/
+infile=Categorize_by_FunctionL3_FilteredTrimmed2_rarefied.biom
+outfile=Categorize_by_FunctionL3_FilteredTrimmed2_rarefied.spf
+
+./biom_to_stamp.py -m KEGG_Pathways ${indir}${infile} > ${outdir}${outfile}
+
+
+##################################################################################
+
+## For additional analysis of the PICRUSt results (e.g. in R) the biom table was 
+## also converted into .txt format.  
+
+#!/bin/bash -l
+#SBATCH -t 1:00:00
+#SBATCH -p core -n 1 
+
+module load bioinfo-tools
+module load Qiime/1.9.1
+
+biom convert -i Categorize_by_FunctionL3_FilteredTrimmed2_rarefied.biom -o Categorize_by_FunctionL3_FilteredTrimmed2_rarefied.txt --to-tsv --header-key KEGG_Pathways
+
+## Categorize_by_FunctionL3_FilteredTrimmed2_rarefied.txt --> AFSmicrobiome_SI_Categorize_by_FunctionL3_FilteredTrimmed_rarefied_Rinput_DatasetS16.txt (Additional Dataset S16)
+

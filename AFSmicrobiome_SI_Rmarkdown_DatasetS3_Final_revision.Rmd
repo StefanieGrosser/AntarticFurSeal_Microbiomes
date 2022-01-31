@@ -1,0 +1,2190 @@
+---
+title: "Analysis of the Antarctic Fur Seal Skin Microbiome"
+author: Stefanie Grosser
+date: 01/18/2019
+output:
+  html_document:
+        toc: true
+        toc_float: true
+        code_folding: hide
+---
+<style>
+p.caption {
+  font-size: 0.9em;
+}
+</style>
+
+```{r setup, include=FALSE, cache = F}
+knitr::opts_chunk$set(echo = TRUE, error = TRUE)
+```
+
+This document provides all R codes for the analyses described in Grosser et al. "Fur seal microbiota are shaped by the social and physical environment, show mother-offspring similarities and are associated with host genetic quality". We hope that sharing this code alongside the paper will be useful for other researchers. If you have any questions about the analyses feel free to contact me at s.grosser[at]biologie.uni-muenchen.de.
+
+We collected skin swabs and genetic samples from 48 Antarctic fur seals (*A. gazella*) mother-offspring pairs from two breeding sites on Bird Island, South Georgia (freshwater beach and special study beach) and used 16S amplicon sequencing to characterise their bacterial communities. We hypothesise (i) that bacterial diversity should be lower at the colony with high breeding density (special study beach) due to the suppressive effects of elevated social stress on microbial communities; and (ii) that mothers and their pups should have similar microbiomes, reflecting their chemical similarity (discovered in a previous study by Stoffel et al. 2015). We additionally genotyped all of the individuals at 50 hypervariable microsatellite loci and regressed multilocus heterozygosity against microbial diversity. According to the leash model of host control, we would expect to find a negative association between genome-wide individual heterozygosity and overall bacterial diversity. For microbiome characterisation the V3-V4 region of the 16S rRNA gene was paired-end sequenced on an Illumina MiSeq instrument. The paired-end reads were merged and clustered into 97% OTUs and an OTU table was generated following the UPARSE pipeline (Usearch v.9.2.64). 
+
+
+### Read counts
+
+Because sequencing depth can vary between samples, we first visualise the number of read pairs sequenced per sample and the number of sequences that were successfully merged per sample. The highest read pair count is 157,204 (mother-M19), and the lowest 9,607 (pup-P39).
+
+```{r read count, fig.cap = "**Figure 1.** Number of read pairs per sample. Total number of paired-end raw reads is shown in lightgray, and the number of merged reads is shown in darkgray. M samples represent mothers, P samples represent pups. Matching numbers belong to a mother-pup pair.",  fig.height = 4, fig.width = 10, message = FALSE, warning = FALSE}
+
+library(ggplot2)
+
+## Read table containing information about the collected statistics during OTU table generation
+stats.tab<-read.table("./AFSmicrobiome_SI_SequencingStatsFile_Rinput_DatasetS4.txt", sep="\t", header=T)
+
+## Plot reads per sample. Total number of reads pairs is plotted in lightgray; number of merged read pairs is plotted in darkgray
+
+beach_labels <- c(FWB = "Freshwater Beach", SSB = "Special Study Beach")
+#age_labels <- c(Mother = "Mothers", Pup = "Pups")
+
+ggplot()+ 
+  facet_grid(.~Beach, drop=TRUE,space="free",scales="free",labeller=labeller(Beach=beach_labels)) +
+  geom_bar(data=stats.tab,aes(x=SampleID, y=TotalReads),stat="identity",fill="lightgrey", colour="darkgrey",width=.7)+
+  geom_bar(data=stats.tab,aes(x=SampleID, y=ReadsMerged),stat="identity",fill="darkgrey", colour="darkgrey",width=.7)+
+  ylab("No. of read pairs")+
+  xlab("Sample ID")+
+  theme_bw()+
+  guides(fill=FALSE) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  theme(axis.text.x = element_text(angle=90, size=5), axis.title.x = element_text(margin = margin(5, 0, 0, 0)))+
+  theme(axis.title.y=element_text(margin = margin(0, 15, 0, 0)), axis.text.y = element_text(size=10))
+
+```
+<br>
+
+
+### Individual relatedness 
+
+Before analysing the microbiome data of the mother-pup pairs, genetic relatedness is calculated from 50 microsatellites (tested for LD and HWE). Relatedness is calculated with the package "related" following the author's [tutorial](https://frasierlab.files.wordpress.com/2015/03/tutorial1.pdf). Individual P22 is excluded from the analysis due to large amounts of missing data.  
+
+```{r relatedness, message = FALSE, warning = FALSE}
+
+library(related)
+library(gridExtra)
+library(reshape2)
+library(dplyr)
+
+## Load genotype data (IMPORTANT NOTE: delete the header row containing loci names before loading!)
+msats <- readgenotypedata("./AFSmicrobiome_SI_MicrosatelliteGenotypes50_P22removed_colnames_Rinput_DatasetS5.txt")
+
+# ## Compare the different estimators
+# comp <- compareestimators(msats, 100)
+# wang		  0.951875  --> use Wang
+# lynchli		0.950463
+# lynchrd		0.933553
+# quellergt	0.949013
+
+## Simulate for 100 individuals to assess power of the analysis
+sim <- familysim(msats$freqs, 100)
+relsim <- coancestry(sim , wang = 1)
+relsim <- cleanuprvals(relsim$relatedness , 100)
+## Extract only the column containing the wang estimates
+relvalues <- as.numeric(relsim[,"wang"])  
+label1  <- rep("PO", 100)
+label2  <- rep("Full", 100)
+label3  <- rep("Half", 100)
+label4  <- rep("Unrelated", 100)
+labels <- c(label1 , label2 , label3 , label4)
+relsimtab <- as.data.frame(cbind(relvalues,labels),stringsAsFactors=FALSE)
+relsimtab$relvalues <- as.numeric(relsimtab$relvalues)
+
+## Calculate relatedness (wang estimator) for the fur seal individuals
+rel <- coancestry(msats$gdata, wang = 1)
+relvals <- rel$relatedness[,c("pair.no","ind1.id","ind2.id","wang")]
+## write the results to a table and manually add a column defining status of a pair as "unrel" or "pair"
+# write.table(relvals, "./relatednessWang50Msats_P22removed.txt",sep = "\t",quote = FALSE)
+relvals2 <- read.table("./AFSmicrobiome_SI_relatednessWang50Msats_Rinput_DatasetS6.txt",sep = "\t",header=TRUE)
+
+```
+
+``` {r relatedness 2, fig.cap = "**Figure 2.** Pairwise relatedness estimates. The left panel shows relatedness values for simulated pairs of known relatedness. Estimates for Antarctic fur seal individuals are shown in the right panel. Estimates are divided into expected mother-pup pair (PO) and unrelated pairwise comparisons.", echo=TRUE, message = FALSE, warning = FALSE, fig.height = 4.2, fig.width = 10 }
+
+## Boxplots for the simulation results
+q <- ggplot(relsimtab, aes(x=labels, y=relvalues)) + 
+      geom_boxplot(fill="lightgrey") + 
+      theme(legend.position='none') +  
+      theme_bw() + 
+      theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) +   
+      ylab("Relatedness Estimate (Wang)")+
+      xlab("Relatedness Category")+
+      coord_cartesian(ylim = c(-0.3, 0.7))+
+      theme(axis.text.x = element_text(size=10), axis.title.x = element_text(margin = margin(10, 0, 0, 0)))+
+      theme(axis.title.y=element_text(margin = margin(0, 15, 0, 0)), axis.text.y = element_text(size=10))
+
+## Make a boxplot for the pairs and unrelated categories and mark the outlier points with the number of the comparison.
+is_outlier <- function(x) {
+  return(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x))
+}
+relvals2[,"pairNames"] <-  paste(relvals2[,2], relvals2[,3], sep="")
+
+b <-relvals2 %>%
+  group_by(pairs) %>%
+  mutate(outlier = ifelse(is_outlier(wang), pairNames , as.numeric(NA))) %>%
+  ggplot(., aes(x = factor(pairs), y = wang)) +
+  geom_boxplot(fill="lightgrey") +
+  xlab("Relatedness Category")+
+  ylab("")+
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) +  
+  coord_cartesian(ylim = c(-0.3, 0.7))+
+  theme(axis.text.x = element_text(size=10), axis.title.x = element_text(margin = margin(10, 0, 0, 0)))+
+  theme(axis.title.y=element_text(margin = margin(0, 15, 0, 0)), axis.text.y = element_text(size=10))+
+  geom_text(aes(label = outlier), na.rm = TRUE, hjust = -0.3,size=2)
+
+grid.arrange(q,b, ncol=2)
+
+```
+<br> 
+
+The wang estimator seems to be suitable to reliably distinguish parent-offspring pairs from unrelated individual pairs. The results show that five of the apparent mother-pup pairs are not related. These five pairs are all from special study beach (high-density colony). This suggests, that pairs have been wrongly identified in the field (allo-suckling occurs in this species). Pairs identified as unrelated by this analysis are: Pair49, Pair46, Pair15, Pair13, Pair11. An additional parentage analsis with the software Colony also confirms these pairs to be unrelated. Based on these results the five pairs will be treated as unrelated in analyses that require pair information. 
+<br> 
+
+
+### The *A. gazella* skin microbiome
+
+```{r sintax conversion, eval=FALSE, message = FALSE, warning = FALSE}
+## Convert the UPARSE .sintax classification table into a data frame
+## This script was kindly provided by Dr. Ulrich Knief
+
+## Sintax format:
+# Otu1	d:Bacteria(1.0000),p:"Proteobacteria"(1.0000),c:Gammaproteobacteria(1.0000),o:Pseudomonadales(1.0000),f:Moraxellaceae(1.0000),g:Psychrobacter(1.0000),s:Psychrobacter_maritimus(0.3100)	+	d:Bacteria,p:"Proteobacteria",c:Gammaproteobacteria,o:Pseudomonadales,f:Moraxellaceae,g:Psychrobacter
+
+## Phyloseq required format
+#      Domain Phylum Class Order Family Genus Species
+# OTU1  "b"    "b"    "v"   "v"   "l"    "n"   "j"    
+
+path = "./"
+separators <- c("d","p","c","o","f","g","s")
+dat <- read.table(paste(path, "AFSmicrobiome_SI_otuRDPclassification_Rinput_DatasetS7.sintax", sep=""), header=FALSE, sep="+", stringsAsFactors=FALSE)
+
+## Get OTU IDs
+OTUs <- unlist(lapply(strsplit(as.character(dat$V1),"\t",fixed = TRUE),"[[",1))
+
+## Create data frame
+tab <- data.frame(matrix(rep(NA,8*length(OTUs)),ncol=8))
+colnames(tab) <- c("OTU","Domain","Phylum","Class","Order","Family","Genus","Species")
+
+## Loop over all rows
+for(i in 1:nrow(tab)) {
+  out <- unlist(strsplit(as.character(dat$V2), ",", fixed = TRUE)[i])
+  
+  ## Find and add missing values
+  Add <- which(!(separators %in% gsub("\t", "", unlist(lapply(strsplit(as.character(out), ":", fixed = TRUE),"[[",1)))))
+  if(length(Add)>0) { for(j in 1:length(Add)) { out <- c(out[1:(Add[j]-1)],paste(separators[Add[j]],":NA",sep=""),out[Add[j]:length(out)]); out <- out[1:7] }}
+  
+  ## If missing values occur always on the right, this will work:
+  ##	while(length(out) < 7) { out <- c(out,":NA") }
+  out <- unlist(lapply(strsplit(as.character(out), ":", fixed = TRUE),"[[",2))
+  tab[i, ] <- c(OTUs[i],out)
+}
+
+# write.table(tab,paste(path, "AFSmicrobiome_SI_otuRDPclassification_phyloseqIn_Rinput_DatasetS8.txt", sep=""), append=FALSE, row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE, eol="\n")
+
+## Manually change "_" to a space and remove "/Chloroplast" from the phylum column annotation "Cyanobacteria/Chloroplast" for better readability of plots (The Phylum level annotation is always Cyanobacteria/Chloroplast for all Cyanobacteria. However, none of the sequences should be chloroplast derived in this analysis as they have been filtered after the OTU clustering.)
+
+```
+
+
+```{r overall microbiome,  message = FALSE, warning = FALSE}
+
+library(phyloseq)
+library(ggplot2)
+library(vegan)
+library(dplyr)
+library(scales)
+library(grid)
+library(reshape2)
+library(gridExtra)
+library(knitr)
+
+## Import the OTU table 
+otu.tab <- as.matrix(read.table("./AFSmicrobiome_SI_OTUtable_final_trimmed_allSamples_Rinput_DatasetS9.txt", header=T, sep= "\t", row.names=1, na.strings=c("","NA")))
+## Import the rarefied OTU table (10,000 reads/sample)
+otu_rarefied.tab <- as.matrix(read.table("./AFSmicrobiome_SI_OTUtable_final_trimmed_raref10000_Rinput_DatasetS10.txt", header=T, sep= "\t", row.names=1, na.strings=c("","NA")))
+## Import the taxonomy table
+tax.tab <- as.matrix(read.table("./AFSmicrobiome_SI_otuRDPclassification_phyloseqIn_Rinput_DatasetS8.txt", header=T, sep= "\t", row.names=1, na.strings=c("","NA")))
+## Import sample meta data
+meta.tab <- read.table("./AFSmicrobiome_SI_Metadata_allSamples_Rinput_DatasetS11.txt", header=T, sep= "\t", row.names=1, na.strings=c("","NA"))
+
+## Combine all files into a phyloseq object
+otu.obj <- otu_table(otu.tab, taxa_are_rows = TRUE)
+tax.obj <- tax_table(tax.tab)
+meta.obj <- sample_data(meta.tab)
+otu_rarefied.obj <- otu_table(otu_rarefied.tab, taxa_are_rows = TRUE)
+## Make a phyloseq object
+phylo.obj <- phyloseq(otu.obj, tax.obj, meta.obj)
+phylo_rarefied.obj <- phyloseq(otu_rarefied.obj, tax.obj, meta.obj)
+
+## Look at the phyloseq object
+phylo.obj
+
+## Convert the OTU and taxonomy tables into a data frame
+otus <- as.data.frame(otu.tab)
+otus <- cbind(otus, rownames(otus))
+colnames(otus)[length(otus)] <- "OTU"
+tax <- as.data.frame(tax.tab)
+tax <- cbind(tax, rownames(tax))
+colnames(tax)[length(tax)] <- "OTU"
+## Merge the tables
+otu_tax <- dplyr::left_join(otus, tax, by = "OTU")
+## Calculate the total number of reads for each OTU and add a column to the data frame
+otu_tax <- cbind(otu_tax, rowSums(otu_tax[,1:96]))
+colnames(otu_tax)[105] <- "TotalCount"
+## Remove unwanted levels and rename NA columns to "undefined"
+otu_tax$Phylum <- droplevels(otu_tax$Phylum)
+levels(otu_tax$Phylum) <- c(levels(otu_tax$Phylum), "undefined") 
+otu_tax$Phylum[is.na(otu_tax$Phylum)] <- "undefined"
+levels(otu_tax$Genus) <- c(levels(otu_tax$Genus), "undefined") 
+otu_tax$Genus[is.na(otu_tax$Genus)] <- "undefined"
+
+## Make a table with phyla abundance from the unadjusted counts
+TotalPhylaCounts <- as.data.frame(aggregate(TotalCount ~ Phylum, FUN = sum, data=otu_tax))
+TotalPhylaCounts <- dplyr::arrange(TotalPhylaCounts, desc(TotalCount))
+## Calculate percentages
+TotalPhylaCounts <- cbind(TotalPhylaCounts,(TotalPhylaCounts$TotalCount*100)/sum(TotalPhylaCounts$TotalCount))
+colnames(TotalPhylaCounts)[3] <- "Abundance"
+## Check if all reads add up to the total read count of 3,173,550
+#sum(TotalPhylaCounts$TotalCount)
+## Count the number of OTUs for each phylum
+df <- data.frame(Phylum=character(),NoOTUs = integer(), stringsAsFactors=FALSE) 
+for (i in TotalPhylaCounts$Phylum) {
+      len <- length(which(otu_tax$Phylum == i))
+      df2 <- as.data.frame(cbind(Phylum = i, NoOTUs = len),stringsAsFactors=FALSE)
+      df <- rbind(df,df2)
+}
+df$NoOTUs <- as.numeric(df$NoOTUs)
+## Add this information to the abundance table
+TotalPhylaCounts <- dplyr::left_join(TotalPhylaCounts,df, tax, by = "Phylum")
+colnames(TotalPhylaCounts) <- c("Phylum","Read Count", "Abundance (%)", "No of. OTUs")
+
+## Do the same for the genus level
+TotalGenusCounts <- as.data.frame(aggregate(TotalCount ~ Genus, FUN = sum, data=otu_tax))
+TotalGenusCounts <- dplyr::arrange(TotalGenusCounts, desc(TotalCount))
+TotalGenusCounts <- cbind(TotalGenusCounts,(TotalGenusCounts$TotalCount*100)/sum(TotalGenusCounts$TotalCount))
+colnames(TotalGenusCounts)[3] <- "Abundance"
+## Count the number of OTUs for each genus
+df <- data.frame(Genus=character(),NoOTUs = integer(), stringsAsFactors=FALSE) 
+for (i in TotalGenusCounts$Genus) {
+      len <- length(which(otu_tax$Genus == i))
+      df2 <- as.data.frame(cbind(Genus= i, NoOTUs = len),stringsAsFactors=FALSE)
+      df <- rbind(df,df2)
+}
+df$NoOTUs <- as.numeric(df$NoOTUs)
+## Add this information to the abundance table
+TotalGenusCounts <- dplyr::left_join(TotalGenusCounts,df, tax, by = "Genus")
+colnames(TotalGenusCounts) <- c("Genus","Read Count", "Abundance (%)", "No of. OTUs")
+
+```
+
+
+First, we examine the presence and abundance of bacterial phyla in the Antarctic fur seal skin microbiome.
+<br> 
+
+
+```{r general microbiome table, message = FALSE, warning = FALSE}
+
+library(kableExtra)
+
+## Make a table for phyla abundance
+kable(TotalPhylaCounts ,format = "html", digits = 2, row.names = FALSE, caption = "Table 1. Bacterial phyla detected in the Antarctic fur seal skin microbiome.") %>%
+  kable_styling(bootstrap_options = c("condensed","striped"), full_width = F)
+
+```
+<br> 
+
+Then we have a look at the presence and abundance of bacterial genera.
+
+```{r general microbiome table 2, message = FALSE, warning = FALSE}
+
+library(kableExtra)
+
+## Make a table for genus abundance
+kable(TotalGenusCounts, format = "html", digits = 2, row.names = FALSE, caption = "Table 2. Bacterial genera detected in the Antarctic fur seal skin microbiome") %>%
+  kable_styling(bootstrap_options = c("condensed","striped"), full_width = F)
+
+```
+<br> 
+
+
+### The core microbiome
+
+Next, we examine the core microbiome. We can define the core microbiome of a group of hosts as the OTUs that are present in a certain percentage of the sampled individuals. Here we want to know which OTUs are present in all of the sampled individuals and in 90% of the sampled individuals. 
+<br> 
+
+```{r core microbiome,  message = FALSE, warning = FALSE}
+
+## Get the core microbiome (i.e. all OTUs that are present in 100% of the samples)
+core.tab <- otu_tax[which((apply(otu_tax[,1:96], 1, function(row) all(row !=0 )))=="TRUE"),]
+#dim(core.tab) # 29 OTUs are present in all samples
+## Make a table for the taxonomic information of the core microbiome
+core.tax <- core.tab[,c(97:105)] 
+## Calculate the percentages
+core.tax <- cbind(core.tax,(core.tax$TotalCount*100)/3173550)
+core_print.tax <- core.tax[,c("OTU","Phylum","Family","Genus","(core.tax$TotalCount * 100)/3173550")]
+colnames(core_print.tax)[5] <- "Abundance (%)"
+## Export as tab delimited table
+# write.table(core_print.tax, "./AFSCoreMicrobiomeOTUs.txt", sep = "\t", quote = FALSE)
+
+## Get the core microbiome present in 90% of the samples
+## 90% of samples is 86.4, i.e, OTUs have to be present in 87 or more samples.
+core90.tab <- otu_tax[apply(otu_tax[,1:96] != 0, 1, sum) >= 87, ]
+#dim(core90.tab) # 123 OTUs are present in 90% of the samples
+
+## Make a table with the additional OTUs not already present in the 100% core microbiome table
+core90.tax <- core90.tab[,c(97:105)] 
+## Calculate the percentages
+core90.tax <- cbind(core90.tax,(core90.tax$TotalCount*100)/3173550)
+## Remove the OTUs that are already present in the 100% core microbiome table
+core90_reduced.tax <- core90.tax[-which(core90.tax$OTU %in% core.tax$OTU),]
+core90_reduced_print.tax <- core90_reduced.tax[,c("OTU","Phylum","Family","Genus","(core90.tax$TotalCount * 100)/3173550")]
+colnames(core90_reduced_print.tax)[5] <- "Abundance (%)"
+## Export as tab delimited table
+# write.table(core90_reduced_print.tax, "./AFSCoreMicrobiome90OTUs.txt", sep = "\t", quote = FALSE)
+
+```
+
+```{r core microbiome table, message = FALSE, warning = FALSE}
+
+kable(core_print.tax, format = "html", digits = 2, row.names = FALSE, caption = "**Table 3.** Antarctic fur seal skin core microbiome (OTUs present in all sampled individuals)") %>%
+  kable_styling(bootstrap_options = c("condensed","striped"), full_width = F)
+
+
+kable(core90_reduced_print.tax, format = "html", digits = 2, row.names = FALSE, caption = "**Table 4.** Antarctic fur seal skin extended core microbiome (OTUs present in 90% of the sampled individuals)") %>%
+  kable_styling(bootstrap_options = c("condensed","striped"), full_width = F)
+
+
+```
+<br> 
+
+
+### Bacterial abundance
+
+Above we have examined the overall abundance of the different bacterial phyla on Antarctic fur seal skin (Table 1). We now want to visualise the abundance of bacterial phyla for each individual separately. We only display phyla with more than 1% abundance in each sample.
+
+```{r abundance plots nonNorm, message = FALSE, warning = FALSE, fig.cap = "**Figure 3.** Relative abundance of bacterial phyla present in each sample based on non-normalised counts. For each sample only phyla with an abundance > 1% are shown (not all columns add up to 1.0).", fig.height = 6, fig.width = 10}
+
+library(phyloseq)
+library(scales)
+library(reshape2)
+library(dplyr)
+
+## Plot phyla relative abundance for each individual (Phyla with more than 1% abundance). 
+## Non-normalised data (plot looks the same when rarefied OTU table is used)
+afs_phylum <- phylo.obj %>%
+  tax_glom(taxrank = "Phylum") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01) %>%                         # Filter out low abundance taxa
+  arrange(desc(Abundance))                             # Sort data frame alphabetically by phylum
+
+## Define phylum colours
+phylum_colors <- c("#673770", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD", "#AD6F3B", "#CBD588","#D14285", "#652926" , "#C84248", "#8569D5")
+## Define plot labels
+beach_labels <- c(Freshwater = "FWB", SSB = "SSB")
+age_labels <- c(M = "Mothers", P = "Pups")
+
+
+ggplot(afs_phylum, aes(x = PlotLabel, y = Abundance, fill = Phylum)) + 
+      facet_grid(Beach~Age, drop=TRUE,space="free",scales="free",labeller=labeller(Age=age_labels,Beach=beach_labels)) +
+      geom_bar(stat = "identity") +
+      theme_bw() +
+      scale_fill_manual(values = phylum_colors) +
+      theme(axis.text.x = element_blank(),axis.ticks = element_blank(),axis.title.x = element_blank(), axis.title.y = element_text(size=14), axis.text.y = element_text(size=12))+
+      guides(fill = guide_legend(keywidth = 1, keyheight = 1)) +
+      theme(legend.text = element_text(size = 11),legend.title = element_text(face="bold")) +
+      ylab("Relative abundance (phyla > 1%) \n") +
+      theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank()) +
+      theme(panel.spacing.x = unit(0, "lines"))+
+      theme(strip.text.x = element_text(size=12), strip.text.y = element_text(size=12))
+
+```
+<br> 
+
+
+```{r abundance plots raref, eval=FALSE, message = FALSE, warning = FALSE, inlcude= FALSE, fig.cap = "Relative abundance of bacterial phyla present in each sample based on rarefied counts. For each sample only phyla with an abundance > 1% are shown (not all columns add up to 1.0).", fig.height = 6, fig.width = 10}
+
+## Same plot as above but plotting the rarefied data.
+
+library(phyloseq)
+library(scales)
+library(reshape2)
+
+## Plot phyla relative abundance for each individual (Phyla with more than 1% abundance)
+## Rarefied data
+afs_phylum_rarefied <- phylo_rarefied.obj %>%
+  tax_glom(taxrank = "Phylum") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.01) %>%                         # Filter out low abundance taxa
+  arrange(desc(Abundance))                                      # Sort data frame alphabetically by phylum
+
+phylum_colors <- c("#673770", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD", "#AD6F3B", "#CBD588","#D14285", "#652926" , "#C84248", "#8569D5")
+beach_labels <- c(Freshwater = "Freshwater Beach", SSB = "Special Study Beach")
+age_labels <- c(M = "Mothers", P = "Pups")
+
+ggplot(afs_phylum_rarefied, aes(x = PlotLabel, y = Abundance, fill = Phylum)) + 
+      facet_grid(Beach~Age, drop=TRUE,space="free",scales="free",labeller=labeller(Age=age_labels,Beach=beach_labels)) +
+      geom_bar(stat = "identity") +
+      theme_bw()+
+      scale_fill_manual(values = phylum_colors) +
+      theme(axis.text.x = element_blank(),axis.ticks = element_blank(),axis.title.x = element_blank(), axis.title.y = element_text(size=12), axis.text.y = element_text(size=10))+
+      guides(fill = guide_legend(keywidth = 1, keyheight = 1)) +
+      theme(legend.text = element_text(size = 10),legend.title = element_text(face="bold"))+
+      ylab("Relative abundance (phyla > 1%) \n") +
+      theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())+
+      theme(panel.spacing.x = unit(0, "lines"))+
+      theme(strip.text.x = element_text(size=11), strip.text.y = element_text(size=11))
+
+```
+<br> 
+
+Based on the abundance plot we might assume that bacterial diversity is higher at the low density colony freshwater beach. This will be properly tested below.  
+
+### Alpha diversity
+
+Alpha diversity for each sample was calculated in USEARCH. We calculated the Jost index which is based on a family of metrics called Hill numbers of parameter q. q determines how abundance is weighted. These indices are transformed into the effective number of species. We use q=1, which is equivalent to Shannon entropy and balances differently abundant OTUs. There is an argument about whether to rarefy OTU tables to even number of reads per sample. To test, if uneven read depth affected the calculation of diversity measures we calculated alpha diversity as described above for the non-normalised OTU table, and the OTU table rarefied to 10,000 reads per sample using QIIME  (samples with <10,000 reads (P24, P39) were removed from the latter).
+
+```{r alpha div,  message = FALSE, warning = FALSE, fig.cap = "**Figure 4.** Comparison of alpha diversity estimates calculated from the non-normalised and rarefied OTU tables.",  fig.height = 4, fig.width = 4}
+
+## Read the table with the alpha-diversity estimates calculated in USEARCH
+alpha_div <- read.table("./AFSmicrobiome_SI_alphaDiversity_Rinput_DatasetS12.txt", header=T, sep= "\t", row.names=1, na.strings=c("","NA"))
+
+## Test how well the estimates for the non-normalised and rarefied OTU tables are correlated
+cor.test(alpha_div$jost1_all, alpha_div$jost1_raref)
+
+ggplot(alpha_div, aes(x = jost1_all, y=jost1_raref)) + 
+  geom_point()+
+  stat_smooth(method="lm", se=FALSE)+
+  theme_bw()+
+  ylab("Effective no. of species (rarefied data)")+
+  xlab("Effective no. of species (non-normalised data)")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  annotate("text", x=60, y=100, label= paste("r==0.99"), parse=TRUE, size=6)
+
+```
+<br> 
+
+
+In the next step, we test if there is a difference in alpha-diversity between beaches and the two age groups. We first have to establish if alpha diversity has a gaussian distribution 
+
+
+```{r alpha div part2 , message = FALSE, warning = FALSE, fig.cap = "**Figure 5.** Histgram of untransformed alpha-diversity estimates (left panel) and square-root transformed alpha-diversity estimates (right panel).", fig.height = 4, fig.width = 8}
+
+library(gridExtra)
+library(ggplot2)
+library(dplyr)
+library(lme4)
+
+## Check distribution of alpha diversity estimates.
+## Effective number of species values can be treaded as a continuous variable (not a count table anymore)
+h <- ggplot(alpha_div, aes(jost1_all)) + 
+        geom_histogram(binwidth=17,fill="lightgrey", colour="gray26") +  
+        theme_bw()+
+        ylab("Count")+
+        xlab("alpha diversity (Jost 1)")+
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+## -> not normal
+
+##  Square root transform data 
+th <- ggplot(alpha_div, aes(sqrt(jost1_all))) + 
+        geom_histogram(binwidth=1, fill="lightgrey", colour="gray26") +  
+        theme_bw()+
+        ylab("Count")+
+        xlab("alpha-diversity (Jost 1)")+
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+## -> square root transformation achieves normality 
+
+grid.arrange(h, th, ncol=2)
+
+```
+<br> 
+
+Now we can perform linear mixed models (LMM) and likelihood ratio test to test for differences in alpha diversity between the groups. We make use of LMMs to include pair ID as a random effect as we can not consider the two samples of a mother-pup pair as being truly independent. The two individuals of the pairs that were determined to be unrelated by parentage analyses are assigned different pair IDs.    
+
+```{r alpha div part3 , message = FALSE, warning = FALSE}
+
+library(lme4)
+library(MuMIn)
+
+## Combine the meta data with the diversity table
+meta2.tab <- cbind(meta.tab, SampleID = row.names(meta.tab))
+alpha_div2 <- cbind(alpha_div, SampleID = row.names(alpha_div))
+alpha_model.tab <- dplyr::left_join(meta2.tab, alpha_div2, by = "SampleID")
+
+## In the model below PairID is used as a random effect to account for non-independence of a mother-pup pair. Parentage analysis revealed five unrelated pairs at SSB. To avoid removing 10 data points from one beach we simply assign different unique PairIDs to these individuals. Pairs: "M-P49","M-P46","M-P15","M-P13","M-P11"
+
+## Copy the PairID column
+alpha_model_unrel.tab <- cbind(alpha_model.tab, PairID2 = alpha_model.tab$PairID)
+## Change the PairID of the pups by appending a p to the end of the ID
+for (i in c("P49","P46","P15","P13","P11")) {
+    levels(alpha_model_unrel.tab$PairID2) <- c(levels(alpha_model_unrel.tab$PairID2),   paste0(alpha_model_unrel.tab$PairID2[alpha_model_unrel.tab$SampleID==(i)],"p")) 
+    alpha_model_unrel.tab$PairID2[alpha_model_unrel.tab$SampleID==(i)] <-  paste0(paste0(alpha_model_unrel.tab$PairID2[alpha_model_unrel.tab$SampleID==(i)],"p"))
+}
+
+## Test if alpha diversity is different between the two beaches and between mothers and pups
+## jost1 = response variable, beach and age = predictors
+## PairID used as a random effect to account for non-independence of a pair
+model1 <- lmer(sqrt(jost1_all) ~ Beach + Age + (1|PairID2), data=alpha_model_unrel.tab) 
+## Get the model output
+summary(model1)
+## Examine the residual plot and qqplot for violation of model assumptions
+plot(model1)
+qqnorm(resid(model1))
+## Calculate the coefficient of determination (outputs the marginal and conditional R squared)
+r.squaredGLMM(model1)
+
+## Perform likelihood ratio tests to obtain p-values
+## The REML=FALSE specification is necessary for comparing models using the likelihood ratio test 
+modelFull <- lmer(sqrt(jost1_all) ~ Beach + Age + (1|PairID2), data=alpha_model_unrel.tab, REML=FALSE) 
+modelAge <- lmer(sqrt(jost1_all) ~ Age + (1|PairID2), data=alpha_model_unrel.tab, REML=FALSE) 
+modelBeach <- lmer(sqrt(jost1_all) ~ Beach + (1|PairID2), data=alpha_model_unrel.tab, REML=FALSE) 
+
+anova(modelAge,modelFull)
+anova(modelBeach,modelFull)
+
+## Test if alpha diversity is different between female and male pups
+## jost1 = response variable, beach and sex = predictors
+model1 <- lm(sqrt(jost1_all) ~ Beach + Sex, data=subset(alpha_model.tab, Age=="P")) 
+summary(model1)
+par(mfrow=c(2,2))
+plot(model1)
+
+```
+<br> 
+
+We find that estimates of alpha diversity are significantly higher at freshwater beach compared to special study beach but no significant difference is found between the age groups. 
+<br> 
+
+```{r alpha div part5, message = FALSE, warning = FALSE, fig.cap = "**Figure 6.** Boxplots of alpha diversity estimates for the two breeding colonies - freshwater beach (FWB), special study beach (SSB) - (left panel), the two age groups (center panel), and female and male pups (right panel).", fig.height = 3.5, fig.width = 10}
+
+library(gridExtra)
+library(ggplot2)
+
+## Plot alpha diversity distribution for each beach seperated by age (mothers & pups)
+beach <- ggplot(alpha_model.tab, aes(x = Beach, y=jost1_all, fill=Beach)) + 
+              geom_boxplot()+
+              scale_x_discrete(name="", labels=c(Freshwater="FWB", SSB="SSB"))+ 
+              scale_fill_manual(name="Beach", values=c("dodgerblue3","firebrick2"), labels=c("FWB", "SSB"))+
+              theme_bw()+
+              theme(legend.position=c(0.80,0.87), legend.title = element_blank())+
+              ylab("Effective no. of species (Shannon entropy)")+
+              theme(axis.text.x=element_text(size=10, margin = unit(c(0.3, 0, 0, 0), "cm")))+
+              theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+age <- ggplot(alpha_model.tab, aes(x = Beach, y=jost1_all, fill=Age)) + 
+            geom_boxplot()+
+            scale_x_discrete(name="", labels=c(Freshwater="FWB", SSB="SSB"))+ 
+            theme_bw()+
+            scale_fill_manual(name="Age", values=c("bisque4","bisque1"), labels=c( M = "Mothers", P = "Pups"))+
+            theme(legend.position=c(0.80,0.87), legend.title = element_blank())+
+            theme(axis.text.x=element_text(size=10, margin = unit(c(0.3, 0, 0, 0), "cm")))+
+            theme(axis.title.y = element_blank())+
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+## Use the pup subset of the data to look for differences in sex
+model_pups.tab <- subset(alpha_model.tab, Age=="P")
+
+## Plot alpha diversity distribution for each beach seperated by pup sex
+sex <- ggplot(alpha_model.tab, aes(x=Beach, y=jost1_all,fill=Sex)) + 
+            geom_boxplot(position=position_dodge())+
+            theme_bw()+
+            scale_x_discrete(name="", labels=c(Freshwater="FWB", SSB="SSB"))+ 
+            scale_fill_manual(name="Sex of Pup", values=c("darkorchid3","darkseagreen2"), labels=c( M = "Male", F = "Female"))+
+            theme(legend.position=c(0.80,0.87), legend.title = element_blank())+
+            theme(axis.text.x=element_text(size=10, margin = unit(c(0.3, 0, 0, 0), "cm")))+
+            theme(axis.title.y = element_blank())+
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+grid.arrange(beach, age, sex, ncol=3)
+
+```
+
+```{r alpha div paper plot, message = FALSE, warning = FALSE, include = FALSE}
+
+library(gridExtra)
+library(ggplot2)
+
+## Plot for the manuscript
+alpha_model.tab$BeachAge <- paste(alpha_model.tab$Beach,alpha_model.tab$Age)
+
+age <- ggplot(alpha_model.tab, aes(x = Beach, y=jost1_all, fill=BeachAge)) + 
+            geom_boxplot(position=position_dodge(), aes(alpha = Age))+
+            scale_x_discrete(name="", labels=c(Freshwater="FWB", SSB="SSB"))+ 
+            theme_bw()+
+            scale_fill_manual(name="", values=c("dodgerblue3","dodgerblue3" ,"firebrick2", "firebrick2"), guide=FALSE)+
+            scale_alpha_discrete(range = c(1, 0.2), labels=c("Mothers", "Pups") )+
+            theme(legend.position=c(0.81,0.87), legend.title = element_blank())+
+            theme(axis.text.x=element_text(size=11, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=10))+
+            coord_cartesian(ylim = c(0, 150))+
+            ylab("Effective no. of species")+
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+## Use the pup subset of the data to look for differences in sex
+model_pups.tab <- subset(alpha_model.tab, Age=="P")
+model_pups.tab$BeachSex <- paste(model_pups.tab$Beach,model_pups.tab$Sex)
+
+## Plot alpha diversity distribution for each beach seperated by pup sex
+sex <- ggplot(model_pups.tab, aes(x=Beach, y=jost1_all,fill=BeachSex)) + 
+            geom_boxplot(position=position_dodge(), aes(alpha = Sex))+
+            theme_bw()+
+            scale_x_discrete(name="", labels=c(Freshwater="FWB", SSB="SSB"))+ 
+            scale_fill_manual(name="", values=c("#5d92c6", "#d7e4f5","#e46364","#ffd6d7"),labels=c( M = "Male pups", F = "Female pups"), guide=FALSE)+
+            scale_alpha_discrete(range = c(1, 1), labels=c("Female pups", "Male pups") )+
+            ylab("")+
+            theme(legend.position=c(0.80,0.87), legend.title = element_blank())+
+            theme(axis.text.x=element_text(size=11, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=10))+
+            coord_cartesian(ylim = c(0, 150))+
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+grid.arrange(age, sex, ncol=2)
+
+```
+<br> 
+
+A freshwater stream is traversing through freshwater beach which could contribute to the bacterial diversity at this breeding colony through the input of environmental bacteria that are not present at special study beach. We thus want to investigate if alpha diversity is also elevated at freshwater beach when considering only the four most dominant phyla (Proteobacteria, Bacteroidetes, Firmicutes, and Actinobacteria).  
+
+```{r alpha div main phyla,  message = FALSE, warning = FALSE}
+
+library(dplyr)
+library(lme4)
+library(MuMIn)
+
+## first make list of OTUs that belong to the 4 main phyla
+
+mainphyla_otus.obj <-  subset_taxa(phylo.obj, Phylum %in% c("Proteobacteria", "Bacteroidetes", "Firmicutes", "Actinobacteria"))
+mainphyla_otus.tab <- otu_table(mainphyla_otus.obj)
+mainphyla_otus_list <- row.names(mainphyla_otus.tab)
+
+## Alpha diversity for the selected OTUs is calculated in Usearch.
+## Load resulting alpha diversity table 
+alpha_div_mainphyla.tab <- read.table("./AFSmicrobiome_SI_alphaDiversity_MainPhyla_Rinput_DatasetS13.txt", header=T, sep= "\t", row.names=1, na.strings=c("","NA"))
+
+## Add the rownames as a column called SampleID
+alpha_div_mainphyla_2.tab <- cbind(alpha_div_mainphyla.tab, SampleID = row.names(alpha_div_mainphyla.tab))
+## Merge the tables with the meta data table
+alpha_div_mainphyla_2.tab <- dplyr::left_join(meta2.tab, alpha_div_mainphyla_2.tab, by = "SampleID")
+
+alpha_div_mainphyla_2_unrel.tab <- cbind(alpha_div_mainphyla_2.tab, PairID2 = alpha_div_mainphyla_2.tab$PairID)
+## Change the PairID of the pups by appending a p to the end of the ID
+for (i in c("P49","P46","P15","P13","P11")) {
+  levels(alpha_div_mainphyla_2_unrel.tab$PairID2) <- c(levels(alpha_div_mainphyla_2_unrel.tab$PairID2),   paste0(alpha_div_mainphyla_2_unrel.tab$PairID2[alpha_div_mainphyla_2_unrel.tab$SampleID==(i)],"p")) 
+  alpha_div_mainphyla_2_unrel.tab$PairID2[alpha_div_mainphyla_2_unrel.tab$SampleID==(i)] <-  paste0(paste0(alpha_div_mainphyla_2_unrel.tab$PairID2[alpha_div_mainphyla_2_unrel.tab$SampleID==(i)],"p"))
+}
+
+## Test if alpha diversity is different between the two beaches and between mothers and pups
+## jost = response variable, beach and age = predictors
+## PairID used as a random effect to account for non-independence of a pair
+mod <- lmer(sqrt(jost) ~ Beach + Age + (1|PairID2), data=alpha_div_mainphyla_2_unrel.tab) 
+## Get the model output
+summary(mod)
+## Examine the residual plot and qqplot for violation of model assumptions
+plot(mod)
+qqnorm(resid(mod))
+## Calculate the coefficient of determination (outputs the marginal and conditional R squared)
+r.squaredGLMM(mod)
+
+## Perform likelihood ratio tests to obtain p-values
+## The REML=FALSE specification is necessary for comparing models using the likelihood ratio test 
+modFull <- lmer(sqrt(jost) ~ Beach + Age + (1|PairID2), data=alpha_div_mainphyla_2_unrel.tab, REML=FALSE) 
+modAge <- lmer(sqrt(jost) ~ Age + (1|PairID2), data=alpha_div_mainphyla_2_unrel.tab, REML=FALSE) 
+modBeach <- lmer(sqrt(jost) ~ Beach + (1|PairID2), data=alpha_div_mainphyla_2_unrel.tab, REML=FALSE) 
+
+anova(modAge,modFull)
+anova(modBeach,modFull)
+
+```
+
+```{r alpha div main phyla plot,  message = FALSE, warning = FALSE, fig.cap = "**Figure 7.** Boxplot of alpha diversity estimates for the two breeding colonies - freshwater beach (FWB), special study beach (SSB) based on the four dominant phyla Proteobacteria, Bacteroidetes, Firmicutes, and Actinobacteria.", fig.height = 4, fig.width = 4}
+
+library(ggplot2)
+
+## Plot alpha diversity only for the two breeding colonies
+
+ggplot(alpha_div_mainphyla_2_unrel.tab, aes(x = Beach, y=jost, fill=Beach)) + 
+  geom_boxplot()+
+  scale_x_discrete(name="", labels=c(Freshwater="FWB", SSB="SSB"))+ 
+  scale_fill_manual(name="Beach", values=c("dodgerblue3","firebrick2"), labels=c("FWB", "SSB"))+
+  theme_bw()+
+  theme(legend.position="none")+
+  ylab("Effective no. of species")+
+  theme(axis.text.x=element_text(size=14, margin = unit(c(0.2, 0, 0, 0), "cm")),axis.text.y=element_text(size=14, margin = unit(c(0, 0.1, 0, 0.3), "cm")), axis.title=element_text(size=14))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+```
+
+Alpha diversity remains significantly higher at freshwater beach when considering only OTUs from the four most dominant phyla. 
+
+
+### Beta diversity
+
+To assess the difference in bacterial composition among samples (beta diversity) we calculated Bray-Curtis and weighted UniFrac dissimilarity/distance matrices for normalised and non-normalised OTU tables. To normalise the counts we performed cumulative sum scaling (CSS) with the metagenome-Seq package. UniFrac distance calculations require a phylogenetic tree. The tree was calculated with an outgroup using Pynast in QIIME v.1.9.1. The tree was rooted with an archaeal sequence as outgroup and the outgroup removed before calculation of the weighted UniFrac distance.
+
+```{r beta div, message = FALSE, warning = FALSE}
+
+library(ape)
+
+## Calculate beta diversity and differential OTU abundance for the two beaches and mother and pup groups
+## 1. non-normalised OTU table -> Bray-Curtis and weighted UniFrac
+
+## For wUniFrac distance calculation a phylogeneic tree is needed. The tree was calculated with an outgroup using pynast in QIIME
+## Import phylogeny (pynast with outgroup)
+tree_py_out.file <- read.tree(file="./AFSmicrobiome_SI_outgroup_pynastAligned_filtered_Rinput_DatasetS14.tre")
+## Root tree and trim outgroup from tree (label: U11044_V3V4)
+# tree_py_out.file$tip.label # For checking tip labels
+## Root tree at outgroup
+pytree_rooted.file <- root(tree_py_out.file, outgroup="U11044_V3V4",resolve.root = TRUE) 
+## Remove outgroup
+pynast.tre <- drop.tip(pytree_rooted.file, "U11044_V3V4") 
+
+## Add a column to the meta data table that combines the beach and age variables for easier plotting of groups
+meta.tab$BeachAge <- paste(meta.tab$Beach,meta.tab$Age)
+meta.tab$SampleNames <- rownames(meta.tab)  
+
+## Combine all files into a phyloseq object
+otu.obj <- otu_table(otu.tab, taxa_are_rows = TRUE)
+tax.obj <- tax_table(tax.tab)
+meta.obj <- sample_data(meta.tab)
+## Make a phyloseq object and add tree file
+phylo.obj <- phyloseq(otu.obj, tax.obj, meta.obj)
+phylo.obj <- merge_phyloseq(phylo.obj,pynast.tre)
+
+```
+
+
+First, we calculate the Bray-Curtis and weighted UniFrac distances for the non-normalised OTU table and visualise them with principal coordinate analysis (PCoA).
+
+```{r non-norm plots, message = FALSE, warning = FALSE, fig.cap = "**Figure 8.** Principal coordinate analysis (PCoA) based on Bray-Curtis dissimliarities (left panel) and weighted UniFrac distances (right panel) calculated from the non-normalised OTU table.", fig.height = 5, fig.width = 10}
+
+## Calulate PCoA for non-normalised OTU table with Bray-Curtis.
+afs_pcoa_bray <- ordinate(physeq = phylo.obj, method = "PCoA", distance = "bray")
+
+## Plot PCoA
+b <- plot_ordination(physeq = phylo.obj, ordination = afs_pcoa_bray, color = "BeachAge", shape = "BeachAge") + 
+          geom_point(size = 3.5) +        
+          scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          scale_shape_manual(values = c(19,1,15,0),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          theme_bw()+
+          ggtitle("non-normalised Bray-Curtis")+
+          theme(legend.position="none")+
+          theme(legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+          theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+## The plot above plots the points twice. To remove the second layer do:
+b$layers <- b$layers[-1]
+  
+## Calulate PCoA for non-normalised OTU table with weighted Unifrac.
+afs_pcoa_uni <- ordinate(physeq = phylo.obj, method = "PCoA", distance = "wunifrac")
+
+## Plot PCoA
+u <- plot_ordination(physeq = phylo.obj, ordination = afs_pcoa_uni, color = "BeachAge", shape = "BeachAge") + 
+          geom_point(size = 3.5) +
+          scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          scale_shape_manual(values = c(19,1,15,0),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          theme_bw()+
+          ggtitle("non-normalised weighted UniFrac")+
+          theme(legend.position=c(0.83,0.19), legend.title = element_blank())+
+          theme(legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+          theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+u$layers <- u$layers[-1]
+
+grid.arrange(b, u, ncol=2)
+
+```
+<br> 
+
+
+Prepare an OTU table normalised with cumulative sum scaling (CSS) using the [metagenomeSeq](https://rdrr.io/bioc/metagenomeSeq/) package and following the MetagenomeSeq [vignette](https://rdrr.io/bioc/metagenomeSeq/f/inst/doc/metagenomeSeq.pdfc).
+
+```{r CSS norm, message = FALSE, warning = FALSE}
+
+library("metagenomeSeq")
+
+## Convert the phyloseq object to a metagenomeSeq object (MRexperiment).
+## The Phyloseq_to_metagenomeSeq function is included in the phyloseq package.
+metagenome.obj <- phyloseq_to_metagenomeSeq(phylo.obj)
+## Calculate the proper percentile by which to normalize counts
+cNstat <- metagenomeSeq::cumNormStatFast(metagenome.obj) 
+# cNstat  #0.5
+## Normalise counts
+metagenome.obj <- metagenomeSeq::cumNorm(metagenome.obj, p = cNstat)
+## Export the normalised count table
+metag.norm.counts <- metagenomeSeq::MRcounts(metagenome.obj, norm = TRUE)
+## Add a pseudocount of 0.0001 to the table and log transform
+metag.norm.counts_log <- log(metag.norm.counts+0.0001)
+## Substract the value from log of pseudocount to preserve zeros of the original counts
+metag.norm.counts_log2 <- metag.norm.counts_log-(log(0.0001))
+
+## Make a new phyloseq object with with the new OTU table
+otu_normMG.obj <- otu_table(metag.norm.counts_log2, taxa_are_rows = TRUE)
+phylo_normMG.obj <- phyloseq(otu_normMG.obj, tax.obj, meta.obj)
+phylo_normMG.obj <- merge_phyloseq(phylo_normMG.obj, pynast.tre)
+
+```
+
+
+
+Now we can calculate the Bray-Curtis and weighted UniFrac distances for the CSS normalised OTU table.
+
+```{r CSS norm plots, message = FALSE, warning = FALSE, fig.cap = "**Figure 9.** Principal coordinate analysis (PCoA) based on Bray-Curtis dissimliarity (left panel) and weighted UniFrac distance (right panel) calculated from the CSS normalised OTU table.", fig.height = 5, fig.width = 10}
+
+library(gridExtra)
+library(ggplot2)
+
+##  Calulate PCoA for CSS normalised OTU table with Bray-Curtis.
+afs_pcoa_css_bray <- ordinate(physeq = phylo_normMG.obj, method = "PCoA", distance = "bray")
+
+## Plot PCoA
+b <- plot_ordination(physeq = phylo_normMG.obj, ordination = afs_pcoa_css_bray, color = "BeachAge", shape = "BeachAge") + 
+          geom_point(size = 3.5) +
+          scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          scale_shape_manual(values = c(19,1,15,0),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          theme_bw()+
+          ggtitle("CSS normalised Bray-Curtis")+
+          theme(legend.position=c(0.17,0.80), legend.title = element_blank())+
+          theme(legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+          theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+b$layers <- b$layers[-1]
+
+##  Calulate PCoA for CSS normalised OTU table with weighted Unifrac.
+afs_pcoa_css_uni <- ordinate(physeq = phylo_normMG.obj, method = "PCoA", distance = "wunifrac")
+
+## Plot PCoA
+u <- plot_ordination(physeq = phylo_normMG.obj, ordination = afs_pcoa_css_uni, color = "BeachAge", shape = "BeachAge") + 
+          geom_point(size = 3.5) +
+          scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+          theme_bw()+
+          ggtitle("CSS normalised weighted UniFrac")+
+          theme(legend.position="none")+
+          theme(legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+          theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+u$layers <- u$layers[-1]
+
+grid.arrange(b, u, ncol=2)
+
+```
+<br> 
+
+To visually examine the similarity between mothers and their pups we can use different colour and shapes for each pair.
+<br> 
+
+```{r pair plots , message = FALSE, warning = FALSE, fig.cap = "**Figure 10.** Principal coordinate analysis (PCoA) plots based on weighted UniFrac distance calculated from the CSS normalised OTU table. In the right panel the two individuals of a mother-pup pair are labelled with the same symbol and colour.", fig.height = 5, fig.width = 10}
+
+library(RColorBrewer)
+library(gridExtra)
+library(ggplot2)
+
+## Make plot with different colours and shapes for the pairs
+## Plot PCoA
+u <- plot_ordination(physeq = phylo_normMG.obj, ordination = afs_pcoa_css_uni, color = "BeachAge", shape = "BeachAge") + 
+        geom_point(size = 3.5) +
+        scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+        scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+        theme_bw()+
+        ggtitle("CSS normalised weighted UniFrac")+
+        theme(legend.position="none")+
+        theme(legend.position=c(0.84,0.18), legend.title = element_blank())+
+        theme(legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+u$layers <- u$layers[-1]
+
+## Define colours and shapes for the pairs
+# brewer.pal(8,"Set1")
+colorPairs=rep(c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "darkgray" ,"gold" ,"#A65628", "#F781BF"),6)
+shapePairs=c(0,0,0,0,1,1,1,1,2,2,2,2,5,5,5,5,3,3,3,3,4,4,4,4,6,6,6,6,8,8,8,8,15,15,15,15,16,16,16,16,17,17,17,17,18,18,18,18)
+
+x <- plot_ordination(physeq = phylo_normMG.obj, ordination = afs_pcoa_css_uni, color = "PairID", shape = "PairID") + 
+          geom_point(size=3.5, stroke=1) + 
+          scale_color_manual(values = colorPairs,name="",breaks=sample_data(phylo_normMG.obj)$PairID, labels=sample_data(phylo_normMG.obj)$PairID)+
+          scale_shape_manual(values = shapePairs,name="",breaks=sample_data(phylo_normMG.obj)$PairID, labels=sample_data(phylo_normMG.obj)$PairID)+
+          theme_bw()+
+          theme(legend.position="none")+
+          ggtitle("CSS normalised weighted UniFrac pairs")+
+          theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+x$layers <- x$layers[-1]
+
+grid.arrange(u,x,ncol=2)
+
+```
+<br> 
+
+```{r pair plots paper, eval=FALSE, message = FALSE, warning = FALSE, include = FALSE, fig.height = 10, fig.width = 5}
+
+library(gridExtra)
+library(ggplot2)
+library(phyloseq)
+
+## Manuscripts version of the plot.
+
+## Plot PCoA
+u <- plot_ordination(physeq = phylo_normMG.obj, ordination = afs_pcoa_css_uni, color = "BeachAge", shape = "BeachAge") + 
+        geom_point(size = 3.5,stroke=0.7) +
+        scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+        scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+        theme_bw()+
+        theme(legend.position="none")+
+        theme(legend.position=c(0.84,0.18), legend.title = element_blank())+
+        theme(legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+         theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title.y=element_text(size=12), axis.title.x=element_text(size=12))+
+        xlab("Axis 1 (58.1%)")+
+        ylab("Axis 2 (12.8%)")+
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+u$layers <- u$layers[-1]
+
+
+colorPairs <- rep(c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "darkgray" ,"gold" ,"#A65628", "#F781BF"),6)
+shapePairs <- c(0,0,0,0,1,1,1,1,2,2,2,2,5,5,5,5,3,3,3,3,4,4,4,4,6,6,6,6,8,8,8,8,15,15,15,15,16,16,16,16,17,17,17,17,18,18,18,18)
+
+x <- plot_ordination(physeq = phylo_normMG.obj, ordination = afs_pcoa_css_uni, color = "PairID", shape = "PairID") + 
+        #geom_line(aes(group=meta.tab$PairID), size=0.2)+      ## connects the paired points with a thin colours line
+        geom_point(size=3.5, stroke=0.9)+ 
+        scale_color_manual(values = colorPairs,name="",breaks=sample_data(phylo_normMG.obj)$PairID, labels=sample_data(phylo_normMG.obj)$PairID)+
+        scale_shape_manual(values = shapePairs,name="",breaks=sample_data(phylo_normMG.obj)$PairID, labels=sample_data(phylo_normMG.obj)$PairID)+
+        theme_bw()+
+        xlab("Axis 1 (58.1%)")+
+        ylab("Axis 2 (12.8%)")+
+        theme(legend.position="none")+
+        theme(axis.text.y=element_text(size=10), axis.text.x=element_text(size=10), axis.title.y=element_text(size=12), axis.title.x=element_text(size=12))+
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+x$layers <- x$layers[-1]
+
+grid.arrange(u,x,nrow=2)
+
+```
+
+
+We can also visualise the differences in Bray-Curtis and weighted UniFrac distances within and among breeding colonies, age groups and mother-pup pairs using boxplots. 
+
+```{r distance boxplots,  message = FALSE, warning = FALSE, fig.cap = "**Figure 11.** Weighted UniFrac and Bray-Curtis distances within and among breeding colonies, age groups and mother-pup pairs.", fig.height = 7, fig.width = 8}
+library(phyloseq)
+library(reshape2)
+library(gridExtra)
+library(ggplot2)
+
+## Calculate distance matrices
+unifracDist <- phyloseq::distance(phylo_normMG.obj, method = "wunifrac")
+brayDist <- phyloseq::distance(phylo_normMG.obj, method = "bray")
+## Convert dist element into a matrix
+mx_unifrac <- as.matrix(unifracDist)
+mx_bray <- as.matrix(brayDist)
+## Convert from pairwise matrix to pairwise table
+df_unifrac <- subset(melt(mx_unifrac), value!=0)
+df_bray <- subset(melt(mx_bray), value!=0)
+
+## Use data frame that contains information about the unrelated pairs
+alpha_model_unrel_2.tab <- alpha_model_unrel.tab
+
+## Collect meta data. Two data frames are needed to match the two samples in each row
+df_meta <- subset(alpha_model_unrel_2.tab, select=c("Beach", "Age", "PairID2", "SampleID"))
+df_meta2 <- subset(alpha_model_unrel_2.tab, select=c("Beach","Age", "PairID2", "SampleID"))
+## Rename columns
+colnames(df_meta) <- c("Beach", "Age", "PairID2_1","Var1")  
+colnames(df_meta2) <- c("Beach2","Age2", "PairID2_2", "Var2")  
+## Join the data frames
+df_unifrac_meta <- dplyr::left_join(df_unifrac, df_meta, by="Var1")
+df_unifrac_meta <- dplyr::left_join(df_unifrac_meta, df_meta2, by="Var2")
+df_bray_meta <- dplyr::left_join(df_bray, df_meta, by="Var1")
+df_bray_meta <- dplyr::left_join(df_bray_meta, df_meta2, by="Var2")
+## Add columns indicating if the individuals from the same breeding colony, age group or the same pair
+df_unifrac_meta  <- cbind(df_unifrac_meta,BeachMatch = as.factor(ifelse(df_unifrac_meta$Beach==df_unifrac_meta$Beach2,0,1)))
+df_unifrac_meta  <- cbind(df_unifrac_meta,AgeMatch = as.factor(ifelse(df_unifrac_meta$Age==df_unifrac_meta$Age2,0,1)))
+df_unifrac_meta  <- cbind(df_unifrac_meta,PairMatch = as.factor(ifelse(df_unifrac_meta$PairID2_1==df_unifrac_meta$PairID2_2,0,1)))
+df_bray_meta  <- cbind(df_bray_meta,BeachMatch = as.factor(ifelse(df_bray_meta$Beach==df_bray_meta$Beach2,0,1)))
+df_bray_meta  <- cbind(df_bray_meta,AgeMatch = as.factor(ifelse(df_bray_meta$Age==df_bray_meta$Age2,0,1)))
+df_bray_meta  <- cbind(df_bray_meta,PairMatch = as.factor(ifelse(df_bray_meta$PairID2_1==df_bray_meta$PairID2_2,0,1)))
+
+## Draw plot
+BeachUni <- ggplot(data = df_unifrac_meta, aes(x=BeachMatch, y=value)) + 
+                    geom_boxplot(fill="lightgray")+
+                    theme_bw()+
+                    scale_x_discrete(name="", labels=c("0" ="within", "1" ="among"))+ 
+                    ylab("weighted UniFrac")+
+                    theme(axis.text.x=element_text(size=12, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=12), axis.title.x=element_text(size=14),axis.title.y=element_text(size=14))+
+                    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+AgeUni <- ggplot(data = df_unifrac_meta, aes(x=AgeMatch, y=value)) + 
+                    geom_boxplot(fill="lightgray")+
+                    theme_bw()+
+                    scale_x_discrete(name="", labels=c("0" ="within", "1" ="among"))+ 
+                    ylab("")+
+                    theme(axis.text.x=element_text(size=12, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=12), axis.title.x=element_text(size=14),axis.title.y=element_text(size=14))+
+                    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+PairUni <- ggplot(data = df_unifrac_meta, aes(x=PairMatch, y=value)) + 
+                    geom_boxplot(fill="lightgray")+
+                    theme_bw()+
+                    scale_x_discrete(name="", labels=c("0" ="pairs", "1" ="unrelated"))+ 
+                    ylab("")+
+                    theme(axis.text.x=element_text(size=12, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=12), axis.title.x=element_text(size=14),axis.title.y=element_text(size=14))+
+                    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+BeachBray <- ggplot(data = df_bray_meta, aes(x=BeachMatch, y=value)) + 
+                    geom_boxplot(fill="lightgray")+
+                    theme_bw()+
+                    scale_x_discrete(name="breeding colonies", labels=c("0" ="within", "1" ="among"))+ 
+                    ylab("Bray-Curtis")+
+                    theme(axis.text.x=element_text(size=12, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=12), axis.title.x=element_text(size=14),axis.title.y=element_text(size=14))+
+                    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+AgeBray <- ggplot(data = df_bray_meta, aes(x=AgeMatch, y=value)) + 
+                    geom_boxplot(fill="lightgray")+
+                    theme_bw()+
+                    scale_x_discrete(name="age groups", labels=c("0" ="within", "1" ="among"))+ 
+                    ylab("")+
+                    theme(axis.text.x=element_text(size=12, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=12), axis.title.x=element_text(size=14),axis.title.y=element_text(size=14))+
+                    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+PairBray <- ggplot(data = df_bray_meta, aes(x=PairMatch, y=value)) + 
+                    geom_boxplot(fill="lightgray")+
+                    theme_bw()+
+                    scale_x_discrete(name="", labels=c("0" ="pairs", "1" ="unrelated"))+ 
+                    ylab("")+
+                    theme(axis.text.x=element_text(size=12, margin = unit(c(0.3, 0, 0, 0), "cm")),axis.text.y=element_text(size=12), axis.title.x=element_text(size=14),axis.title.y=element_text(size=14))+
+                    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+grid.arrange(BeachUni,AgeUni,PairUni,BeachBray,AgeBray,PairBray, nrow=2, ncol=3)
+
+```
+<br> 
+
+### ANOSIM -- Analysis of similarities
+
+Analysis of similarities can be used to test for similarity/dissimilarity of bacterial communities between the breeding colonies, age groups, and mother-pup pair groups. As input we use the CSS normalised OTU table from above. 
+<br> 
+Testing for differences in microbial composition between the two breeding sites, overall and separately for mothers and pups.
+
+```{r anosim beach, message = FALSE, warning = FALSE}
+
+library(phyloseq)
+library(vegan)
+
+## Vegan's anosim takes a matrix as input with columns representing OTUs and rows representing samples.
+## The OTU table can be transposed and exported from the phyloseq object as follows:
+OTU1 <- as(otu_table(phylo_normMG.obj), "matrix")
+## transpose if necessary
+if(taxa_are_rows(phylo_normMG.obj)){OTU1 <- t(OTU1)}
+## Coerce to data.frame
+otu_table.tab <- as.data.frame(OTU1)
+## Extract the meta data from the phyloseq object
+meta_data.tab <- as(sample_data(phylo_normMG.obj), "data.frame")
+
+## Perform ANOSIM to test for dissimilarity between beaches
+x <- vegan::anosim(dat = otu_table.tab, grouping = meta_data.tab$Beach, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.8765 
+# Significance: 9.999e-05 
+
+## Perform ANOSIM to test for dissimilarity between mother groups of the two beaches
+x <- vegan::anosim(dat = otu_table.tab[meta_data.tab$Age == "M", ], grouping = meta_data.tab[meta_data.tab$Age == "M", ]$Beach, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.946 
+# Significance: 9.999e-05 
+
+## Perform ANOSIM to test for dissimilarity between pup groups of the two beaches
+x <- vegan::anosim(dat = otu_table.tab[meta_data.tab$Age == "P", ], grouping = meta_data.tab[meta_data.tab$Age == "P", ]$Beach, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.8076 
+# Significance: 9.999e-05 
+
+```
+
+
+
+Testing for differences in microbial composition between the two age groups, overall and separately for each beach.
+
+```{r anosim age, message = FALSE, warning = FALSE}
+
+library(vegan)
+
+## Perform ANOSIM to test for dissimilarity between age groups (mothers and pups)
+x <- vegan::anosim(dat = otu_table.tab, grouping = meta_data.tab$Age, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.006069 
+# Significance: 0.20998 
+
+## Perform ANOSIM to test for dissimilarity between age groups at Freshwater beach only
+x <- vegan::anosim(dat = otu_table.tab[meta_data.tab$Beach == "Freshwater", ], grouping = meta_data.tab[meta_data.tab$Beach == "Freshwater",]$Age, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.08401 
+# Significance: 0.0045995 
+
+## Perform ANOSIM to test for dissimilarity between age groups at Special study beach only
+x <- vegan::anosim(dat = otu_table.tab[meta_data.tab$Beach == "SSB", ], grouping = meta_data.tab[meta_data.tab$Beach == "SSB",]$Age, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.08145 
+# Significance: 0.0014999 
+
+```
+
+Testing for differences in microbial composition between the two sexes (only for pups), overall and separately for each beach.
+
+```{r anosim sex, message = FALSE, warning = FALSE}
+
+library(vegan)
+
+## Make data frames with pup information only
+otu_pups.tab <- otu_table.tab[meta_data.tab$Age == "P", ]
+meta_pups.tab <- meta_data.tab[meta_data.tab$Age == "P", ]
+
+## Perform ANOSIM to test for dissimilarity between male and female pups
+x <- vegan::anosim(dat = otu_pups.tab, grouping = meta_pups.tab$Sex, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: -0.007055 
+# Significance: 0.50545 
+
+## Perform ANOSIM to test for dissimilarity between sexes at Freshwater beach only
+x <- vegan::anosim(dat = otu_pups.tab[meta_pups.tab$Beach == "Freshwater", ], grouping = meta_pups.tab[meta_pups.tab$Beach == "Freshwater",]$Sex, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.1165 
+# Significance: 0.092991 
+
+## Perform ANOSIM to test for dissimilarity between sexes at Special study beach only
+x <- vegan::anosim(dat = otu_pups.tab[meta_pups.tab$Beach == "SSB", ], grouping = meta_pups.tab[meta_pups.tab$Beach == "SSB",]$Sex, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: -0.04223 
+# Significance: 0.72273 
+
+
+```
+
+
+Testing for differences in microbial composition between different mother-pup pairs, overall and separately for each beach.
+
+```{r anosim pairs, message = FALSE, warning = FALSE}
+
+library(vegan)
+
+## Perform ANOSIM to test for dissimilarity between different mother pup pair groups
+x <- vegan::anosim(dat = otu_table.tab, grouping =meta_data.tab$PairID, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.6145 
+# Significance: 9.999e-05 
+
+## Perform ANOSIM to test for dissimilarity between different mother pup pair groups from Freshwater Beach
+## First remove levels from the grouping factor, otherwise R will give an error message (but the calculations are correct either way)
+pairsFW <- meta_data.tab[meta_data.tab$Beach == "Freshwater",]$PairID
+pairsFW <- droplevels(pairsFW)
+x <- vegan::anosim(dat = otu_table.tab[meta_data.tab$Beach == "Freshwater",], grouping = pairsFW, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.3494 
+# Significance: 9.999e-05 
+
+## Perform ANOSIM to test for dissimilarity between different mother pup pairs from Special Study Beach
+pairsSSB <- meta_data.tab[meta_data.tab$Beach == "SSB",]$PairID
+pairsSSB <- droplevels(pairsSSB)
+x <- vegan::anosim(dat = otu_table.tab[meta_data.tab$Beach == "SSB",], grouping = pairsSSB, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.4081 
+# Significance: 9.999e-05 
+
+```
+
+
+We know that some of the pairs are unrelated, thus we will repeat the analysis without these unrelated pairs.
+
+```{r anosim pairs unrel, message = FALSE, warning = FALSE}
+
+library(vegan)
+
+## Because the parentage analysis revealed that several mother-pup pairs are infact unrelated, we repeat the analysis removing these unrelated pairs (Pairs49,46,15,13,11).
+unrelated <- c("M49","M46","M15","M13","M11","P49","P46","P15","P13","P11")
+otu_table_rel.tab <- subset(otu_table.tab, !(rownames(otu_table.tab) %in% unrelated))
+meta_data_rel.tab <- subset(meta_data.tab, !(rownames(meta_data.tab) %in% unrelated))
+meta_data_rel.tab$PairID <- droplevels(meta_data_rel.tab$PairID)
+
+## Perform ANOSIM to test for dissimilarity between different mother pup pair groups
+x <- vegan::anosim(dat = otu_table_rel.tab, grouping =meta_data_rel.tab$PairID, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.6016 
+# Significance: 9.999e-05 
+
+## Perform ANOSIM to test for dissimilarity between different mother pup pair groups from Freshwater Beach
+## First remove levels from the grouping factor, otherwise R will give an error message (but the calculations are correct either way)
+pairsFW <- meta_data_rel.tab[meta_data_rel.tab$Beach == "Freshwater",]$PairID
+pairsFW <- droplevels(pairsFW)
+x <- vegan::anosim(dat = otu_table_rel.tab[meta_data_rel.tab$Beach == "Freshwater",], grouping = pairsFW, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.3494 
+# Significance: 9.999e-05 
+
+## Perform ANOSIM to test for dissimilarity between different mother pup pairs from Special Study Beach
+pairsSSB <- meta_data_rel.tab[meta_data_rel.tab$Beach == "SSB",]$PairID
+pairsSSB <- droplevels(pairsSSB)
+x <- vegan::anosim(dat = otu_table_rel.tab[meta_data_rel.tab$Beach == "SSB",], grouping = pairsSSB, distance = "bray", permutations = 10000)
+summary(x)
+# ANOSIM statistic R: 0.4561 
+# Significance: 9.999e-05 
+
+
+```
+<br> 
+
+### Beta diversity correlations
+
+We now want to test if beta diversity is correlated with the genetic relatedness of individuals. For this, we use the Wang relatedness estimates and a Bray-Curtis dissimilarity matrix calculated form the CSS normalised OTU table and run Mantel tests.   
+
+```{r relatedness beta diversity correlation ,  message = FALSE, warning = FALSE}
+
+library(reshape2)
+library(dplyr)
+library(vegan)
+library(phyloseq)
+
+## Save the relatedness values from the previous analysis in a data frame
+df <- relvals[,c(2,3,4)]
+
+## To perform mantel tests the data frame has to be transformed into a distance matrix
+## First, we collect the sample names from the phyloseq object and remove P22 for which we don't have relatedness estimates
+snames <- sample_names(phylo_normMG.obj)
+snames <- snames[-which(snames=="P22")]
+## Create an empty matrix and fill it with the relateness estimates
+M <- array(0, c(length(snames), length(snames)), list(snames, snames))
+i <- match(df$ind1.id, snames)
+j <- match(df$ind2.id, snames)
+M[cbind(i,j)] <- M[cbind(j,i)] <- df$wang
+
+##Also remove sample P22 from the phyloseq object
+phylo_normMG_sub.obj <- subset_samples(phylo_normMG.obj, SampleNames != "P22")
+#phylo_sub.obj <- subset_samples(phylo.obj, SampleNames != "P22")
+
+## Extract OTU table from phyloseq object
+OTU1 = as(otu_table(phylo_normMG_sub.obj), "matrix")
+## Transpose the otu table
+if(taxa_are_rows(phylo_normMG_sub.obj)){OTU1 <- t(OTU1)}
+## Coerce to data.frame
+OTUdf = as.data.frame(OTU1)
+
+## Calulate bray-curtis distance
+otu_dist_bray <- as.matrix(vegan::vegdist(as.matrix(OTUdf), method = "bray", diag=TRUE, upper=TRUE))
+
+## Perform the mantel test
+vegan::mantel(otu_dist_bray,M, method = "spearman", permutation = 1000)
+
+```
+
+Testing for differences in microbial composition between the age groups, overall and separately for each beach.
+
+```{r relatedness beta diversity correlation 2 ,  message = FALSE, warning = FALSE}
+
+library(vegan)
+
+## Perform mantel test separately for pups and mothers
+## Get the sample names for all mothers and for all pups
+snames_M <- sample_names(subset_samples(phylo_normMG.obj, Age=="M" ))
+snames_P <- sample_names(subset_samples(phylo_normMG.obj, Age=="P" & SampleNames != "P22"))
+## Perform the mantel test for mothers
+vegan::mantel(otu_dist_bray[snames_M,snames_M],M[snames_M,snames_M], method = "spearman", permutation = 1000)
+## Perform the mantel test for pups
+vegan::mantel(otu_dist_bray[snames_P,snames_P], M[snames_P,snames_P], method = "spearman", permutation = 1000)
+ 
+## Perform mantel test separately for pups and mothers at each beach
+## Get the sample names for all mothers and for all pups
+sname_M_FWB <- sample_names(subset_samples(phylo_normMG.obj, BeachAge=="Freshwater M" ))
+sname_M_SSB <- sample_names(subset_samples(phylo_normMG.obj, BeachAge=="SSB M" ))
+sname_P_FWB <- sample_names(subset_samples(phylo_normMG.obj, BeachAge=="Freshwater P" & SampleNames != "P22" ))
+sname_P_SSB <- sample_names(subset_samples(phylo_normMG.obj, BeachAge=="SSB P" ))
+
+## Perform the mantel test
+vegan::mantel(otu_dist_bray[sname_M_FWB, sname_M_FWB],M[sname_M_FWB, sname_M_FWB], method = "spearman", permutation = 1000)
+vegan::mantel(otu_dist_bray[sname_M_SSB, sname_M_SSB],M[sname_M_SSB, sname_M_SSB], method = "spearman", permutation = 1000)
+vegan::mantel(otu_dist_bray[sname_P_FWB, sname_P_FWB],M[sname_P_FWB, sname_P_FWB], method = "spearman", permutation = 1000)
+vegan::mantel(otu_dist_bray[sname_P_SSB, sname_P_SSB],M[sname_P_SSB, sname_P_SSB], method = "spearman", permutation = 1000)
+
+```
+
+We find no correlation between the genetic relatedness of individuals and the similarity of their microbial communities.
+
+<br> 
+
+For special study beach pupping locations have been recorded in form of x-y coordinates in a grid layout. Thus we can test if individuals that are in closer geographical proximity also share a more similar bacterial community composition. Similar to genetic relatedness we can test for correlation between geographical distance on the beach and Bray-Curtis dissimilarity using Mantel tests.
+
+```{r geodist beta diversity correlation ,  message = FALSE, warning = FALSE}
+
+library(vegan)
+
+## Correlation between geographical distance of SSB individuals and their microbiome similarity (beta diversity)
+## Geographical locations for pupping events were collected from the viewing platform and coded as X,Y coordinates in a grid system
+## Read the data file
+locs <- read.table("./AFSmicrobiome_SI_PuppingLocations_Rinput_DatasetS15.txt", sep = "\t", header = T) 
+## Subset the dataframe for mothers
+locs_M <- locs[,c(1,3,4)]
+rownames(locs_M) <- locs_M$motherID 
+locs_M <- locs_M[,-1]
+## Subset the dataframe for pups
+locs_P <- locs[,2:4]
+rownames(locs_P) <- locs_P$pupID 
+locs_P <- locs_P[,-1]
+
+## Calculate a euclidean distance matrix from the geographic coordinates
+geo_dist_M <- as.matrix(dist(locs_M, method = "euclidean"))
+geo_dist_P <- as.matrix(dist(locs_P, method = "euclidean"))
+## We need to sort the Bray matrix according to the order of the geo_dist matrix first
+sname_M_SSB_sorted <- rownames(geo_dist_M)
+sname_P_SSB_sorted <- rownames(geo_dist_P)
+## Perform the mantel tests
+vegan::mantel(otu_dist_bray[sname_M_SSB_sorted, sname_M_SSB_sorted],geo_dist_M, method = "spearman", permutation = 1000)
+vegan::mantel(otu_dist_bray[sname_P_SSB_sorted, sname_P_SSB_sorted],geo_dist_P, method = "spearman", permutation = 1000)
+
+```
+
+There is no relationship between geographical distance on the beach and beta diversity.
+
+<br> 
+
+
+### Differential abundance analysis
+
+We now want to statistically test which OTUs show differential abundance between the beaches and age groups. We use the DESeq2 extension in the phyloseq package to identify these differentially abundant OTUs.  
+
+```{r da deseq, message = FALSE, warning = FALSE}
+
+library(DESeq2)
+library(phyloseq)
+
+## Make the DESeq object using the phyloseq function. Use beach as variable.
+dsBeach <- phyloseq_to_deseq2(phylo.obj, ~ Beach)
+## Run test for differential abundance using the negative binomial Wald test.
+dsBeachtest <- DESeq(dsBeach, test="Wald", fitType="parametric")
+## Extract the result table that contains log2FC and adjusted p-values (FDR corrected)
+res_beach <- results(dsBeachtest,cooksCutoff = FALSE)
+## Use an alpha cutoff of 0.01
+alpha <- 0.01
+sigtab_beach <- res_beach[which(res_beach$padj < alpha), ]
+sigtab_beach <- cbind(as(sigtab_beach, "data.frame"), as(tax_table(phylo.obj)[rownames(sigtab_beach), ], "matrix"))
+
+paste( "Overall, we find", length(sigtab_beach$log2FoldChange)," significantly differentially abundant OTUs with", length(which(sigtab_beach$log2FoldChange < 0)), "being significantly more abundant at FWB and", length(which(sigtab_beach$log2FoldChange > 0)), "at SSB.")
+
+## For plotting remove entries for which the phylum level classification is not available
+sigtab_beach <- sigtab_beach[-which(is.na(sigtab_beach$Phylum)), ]
+
+## Order results by the largest fold change
+x_beach <- tapply(sigtab_beach$log2FoldChange, sigtab_beach$Phylum, function(x_beach) max(x_beach))
+x_beach <- sort(x_beach, TRUE)
+sigtab_beach$Phylum <- factor(as.character(sigtab_beach$Phylum), levels=names(x_beach))
+
+## Repeat analyis with age as variable.
+dsAge = phyloseq_to_deseq2(phylo.obj, ~ Age)
+dsAgetest = DESeq(dsAge, test="Wald", fitType="parametric")
+res_age <- results(dsAgetest,cooksCutoff = FALSE)
+alpha <- 0.01
+sigtab_age <- res_age[which(res_age$padj < alpha), ]
+sigtab_age <- cbind(as(sigtab_age, "data.frame"), as(tax_table(phylo.obj)[rownames(sigtab_age), ], "matrix"))
+
+paste( "Overall, we find", length(sigtab_age$log2FoldChange)," significantly differentially abundant OTUs with", length(which(sigtab_age$log2FoldChange < 0)), "being significantly more abundant in mothers and", length(which(sigtab_age$log2FoldChange > 0)), "in pups.")
+
+sigtab_age <- sigtab_age[-which(is.na(sigtab_age$Phylum)), ]
+x_age <- tapply(sigtab_age$log2FoldChange, sigtab_age$Phylum, function(x_age) max(x_age))
+x_age <- sort(x_age, TRUE)
+sigtab_age$Phylum <- factor(as.character(sigtab_age$Phylum), levels=names(x_age))
+
+```
+
+We find more differentially abundant OTUs between the two breeding colonies and than between the two age groups. We can plot the results to further examine the magnitude of the fold changes and which phyla the differentially abundant OTUs belong to.
+
+
+```{r da deseq beach, message = FALSE, warning = FALSE, fig.cap = "**Figure 12.** Differential abundance of OTUs between the two breeding colonies. OTU phylum memberships are represented by the different colours. OTUs above 0 are significantly more abundant at SSB and OTUs below 0 are significantly more abundant at FWB.", fig.height = 5.5, fig.width = 9}
+
+library(ggplot2)
+
+## Assign colours to the phyla (matching those from the relative abundance plot)
+phylcols <- c(Acidobacteria = "#673770",Actinobacteria = "#5F7FC7", Armatimonadetes = "#ffe119", Bacteroidetes = "orange", BRC1 = "#808000",Candidatus_Saccharibacteria = "#DA5724", Chloroflexi = "#3cb44b", Cyanobacteria = "#508578",Deinococcus_Thermus = "#CD9BCD",Firmicutes = "#AD6F3B",Fusobacteria = "#CBD588",Gemmatimonadetes = "#fabebe",Ignavibacteriae = "#aaffc3",Microgenomates = "#808080",Planctomycetes = "#D14285",Proteobacteria = "#652926",SR1 = "#000080",Synergistetes = "#46f0f0",Tenericutes = "#C84248",Verrucomicrobia = "#8569D5")
+
+## Change name of Candidatus_Saccharibacteria and Deinococcus_Thermus back to the original names used in the table
+names(phylcols)[which(names(phylcols)=="Candidatus_Saccharibacteria")] <- "Candidatus Saccharibacteria"
+names(phylcols)[which(names(phylcols)=="Deinococcus_Thermus")] <- "Deinococcus-Thermus"
+
+## Make the plot
+ggplot(sigtab_beach, aes(x=Phylum, y=log2FoldChange, colour=Phylum)) +
+            geom_point(size=2.5) + 
+            geom_hline(yintercept = 0,linetype = 2, colour="gray44")+
+            theme_bw()+
+            theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.title.x = element_blank(), axis.title.y = element_text(size=14), axis.text.y = element_text(size=12))+
+            guides(colour = guide_legend(override.aes = list(shape = 15, size = 5.5, linetype=0), ncol = 1))+
+            theme(legend.text = element_text( size = 10),legend.title = element_text(face="bold"))+
+            ylab("log2FC")+
+            ggtitle("DA between beaches")+
+            expand_limits(y=c(-7.5,11))+
+            scale_colour_manual(values=phylcols)+
+            theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+```
+
+```{r da deseq age, message = FALSE, warning = FALSE, fig.cap = "**Figure 13.** Differential abundance of OTUs between the two age groups. OTU phylum memberships are represented by the different colours. OTUs above 0 are significantly more abundant in pups and OTUs below 0 are significantly more abundant in mothers.", fig.height = 5.5, fig.width = 9}
+
+library(ggplot2)
+
+## Assign colours to the phyla (matching those from the relative abundance plot)
+phylcols <- c(Acidobacteria = "#673770",Actinobacteria = "#5F7FC7", Armatimonadetes = "#ffe119", Bacteroidetes = "orange", BRC1 = "#808000",Candidatus_Saccharibacteria = "#DA5724", Chloroflexi = "#3cb44b", Cyanobacteria = "#508578",Deinococcus_Thermus = "#CD9BCD",Firmicutes = "#AD6F3B",Fusobacteria = "#CBD588",Gemmatimonadetes = "#fabebe",Ignavibacteriae = "#aaffc3",Microgenomates = "#808080",Planctomycetes = "#D14285",Proteobacteria = "#652926",SR1 = "#000080",Synergistetes = "#46f0f0",Tenericutes = "#C84248",Verrucomicrobia = "#8569D5")
+
+## Change name of Candidatus_Saccharibacteria and Deinococcus_Thermus back to the original names used in the table
+names(phylcols)[which(names(phylcols)=="Candidatus_Saccharibacteria")] <- "Candidatus Saccharibacteria"
+names(phylcols)[which(names(phylcols)=="Deinococcus_Thermus")] <- "Deinococcus-Thermus"
+
+## Make the plot
+ggplot(sigtab_age, aes(x=Phylum, y=log2FoldChange, colour=Phylum)) +
+          geom_point(size=2.5) + 
+          geom_hline(yintercept = 0,linetype = 2, colour="gray44")+
+          theme_bw()+
+             theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.title.x = element_blank(), axis.title.y = element_text(size=14), axis.text.y = element_text(size=12))+
+          guides(colour = guide_legend(override.aes = list(shape = 15, size = 5.5, linetype=0), ncol = 1))+
+          theme(legend.text = element_text( size = 10),legend.title = element_text(face="bold"))+
+          expand_limits(y=c(-7.5,11))+
+          ylab("log2FC")+
+          ggtitle("DA between age groups")+
+          scale_colour_manual(values=phylcols)+
+          theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+          
+```
+
+
+
+
+
+```{r da deseq 4 groups, message = FALSE, warning = FALSE}
+
+library(DESeq2)
+
+## Find the differences between the age groups at each beach and within each age group between the beaches
+
+## Make subsets of the data
+phylo_FW.obj = subset_samples(phylo.obj, sample_data(phylo.obj)$Beach == "Freshwater")
+phylo_SSB.obj = subset_samples(phylo.obj, sample_data(phylo.obj)$Beach == "SSB")
+phylo_M.obj = subset_samples(phylo.obj, sample_data(phylo.obj)$Age == "M")
+phylo_P.obj = subset_samples(phylo.obj, sample_data(phylo.obj)$Age == "P")
+
+## Run DESeq2 for Freshwater Beach (compare age groups within FWB)
+dsBeach_FW = phyloseq_to_deseq2(phylo_FW.obj, ~ Age)
+## Run test for differential abundance using the negative binomial Wald test.
+dsBeachtest_FW = DESeq(dsBeach_FW, test="Wald", fitType="parametric")
+## Extract the result table that contains logFC and adjusted p-values (FDR corrected)
+res_FW <- results(dsBeachtest_FW,cooksCutoff = FALSE)
+## Use a strict alpha cutoff of 0.01
+alpha <- 0.01
+sigtab_FW <- res_FW[which(res_FW$padj < alpha), ]
+sigtab_FW <- cbind(as(sigtab_FW, "data.frame"), as(tax_table(phylo_FW.obj)[rownames(sigtab_FW), ], "matrix"))
+# dim(sigtab_FW) #69 13
+sigtab_FW <- sigtab_FW[-which(is.na(sigtab_FW$Phylum)), ]
+
+## Order results by the largest fold change
+x_FW <- tapply(sigtab_FW$log2FoldChange, sigtab_FW$Phylum, function(x_FW) max(x_FW))
+x_FW <- sort(x_FW, TRUE)
+sigtab_FW$Phylum <- factor(as.character(sigtab_FW$Phylum), levels=names(x_FW))
+
+## Run DESeq2 for Special Study Beach (compare age groups within SSB)
+dsBeach_SSB = phyloseq_to_deseq2(phylo_SSB.obj, ~ Age)
+dsBeachtest_SSB = DESeq(dsBeach_SSB, test="Wald", fitType="parametric")
+res_SSB <- results(dsBeachtest_SSB,cooksCutoff = FALSE)
+alpha <- 0.01
+sigtab_SSB <- res_SSB[which(res_SSB$padj < alpha), ]
+sigtab_SSB <- cbind(as(sigtab_SSB, "data.frame"), as(tax_table(phylo_SSB.obj)[rownames(sigtab_SSB), ], "matrix"))
+# dim(sigtab_SSB) #64 13
+sigtab_SSB <- sigtab_SSB[-which(is.na(sigtab_SSB$Phylum)), ]
+x_SSB <- tapply(sigtab_SSB$log2FoldChange, sigtab_SSB$Phylum, function(x_SSB) max(x_SSB))
+x_SSB <- sort(x_SSB, TRUE)
+sigtab_SSB$Phylum <- factor(as.character(sigtab_SSB$Phylum), levels=names(x_SSB))
+
+## Run DESeq2 for mothers (compare the two beaches for this age group).
+dsBeach_M = phyloseq_to_deseq2(phylo_M.obj, ~ Beach)
+dsBeachtest_M = DESeq(dsBeach_M, test="Wald", fitType="parametric")
+res_M <- results(dsBeachtest_M,cooksCutoff = FALSE)
+alpha <- 0.01
+sigtab_M <- res_M[which(res_M$padj < alpha), ]
+sigtab_M <- cbind(as(sigtab_M, "data.frame"), as(tax_table(phylo_M.obj)[rownames(sigtab_M), ], "matrix"))
+# dim(sigtab_M) #610  13
+sigtab_M <- sigtab_M[-which(is.na(sigtab_M$Phylum)), ]
+x_M <- tapply(sigtab_M$log2FoldChange, sigtab_M$Phylum, function(x_M) max(x_M))
+x_M <- sort(x_M, TRUE)
+sigtab_M$Phylum <- factor(as.character(sigtab_M$Phylum), levels=names(x_M))
+
+## Run DESeq2 for pups (compare the two beaches for this age group).
+dsBeach_P = phyloseq_to_deseq2(phylo_P.obj, ~ Beach)
+dsBeachtest_P = DESeq(dsBeach_P, test="Wald", fitType="parametric")
+res_P <- results(dsBeachtest_P,cooksCutoff = FALSE)
+alpha <- 0.01
+sigtab_P <- res_P[which(res_P$padj < alpha), ]
+sigtab_P <- cbind(as(sigtab_P, "data.frame"), as(tax_table(phylo_P.obj)[rownames(sigtab_P), ], "matrix"))
+# dim(sigtab_P) #487  13
+sigtab_P <- sigtab_P[-which(is.na(sigtab_P$Phylum)), ]
+x_P = tapply(sigtab_P$log2FoldChange, sigtab_P$Phylum, function(x_P) max(x_P))
+x_P = sort(x_P, TRUE)
+sigtab_P$Phylum = factor(as.character(sigtab_P$Phylum), levels=names(x_P))
+
+## Which groups have more abundant OTUs?
+paste( "At FWB", length(which(sigtab_FW$log2FoldChange < 0)), "OTUs are significantly more abundant in mothers and", length(which(sigtab_FW$log2FoldChange > 0)), "in pups.")
+paste( "At SSB", length(which(sigtab_SSB$log2FoldChange < 0)), "OTUs are significantly more abundant in mothers and", length(which(sigtab_SSB$log2FoldChange > 0)), "in pups.")
+paste( "In the mother cohort", length(which(sigtab_M$log2FoldChange < 0)), "OTUs are significantly more abundant at FWB and", length(which(sigtab_M$log2FoldChange > 0)), "at SSB.")
+paste( "In the pup cohort", length(which(sigtab_P$log2FoldChange < 0)), "OTUs are significantly more abundant at FWB and", length(which(sigtab_P$log2FoldChange > 0)), "at SSB.")
+
+```
+<br>
+
+```{r da deseq plots 4 groups, message = FALSE, warning = FALSE, fig.cap = "**Figure 14.** Differential abundance of OTUs between the two breeding colonies and the two age groups. OTU phylum memberships are represented by the different colours. OTUs above 0 are significantly more abundant at SSB/in pups and OTUs below 0 are significantly more abundant at FWB/in mothers.", fig.height = 7, fig.width = 10}
+
+library(cowplot)
+library(ggplot2)
+
+## Assign colours to the phyla (matching those from the relative abundance plot)
+phylcols <- c(Acidobacteria = "#673770",Actinobacteria = "#5F7FC7", Armatimonadetes = "#ffe119", Bacteroidetes = "orange", BRC1 = "#808000",Candidatus_Saccharibacteria = "#DA5724", Chloroflexi = "#3cb44b", Cyanobacteria = "#508578",Deinococcus_Thermus = "#CD9BCD",Firmicutes = "#AD6F3B",Fusobacteria = "#CBD588",Gemmatimonadetes = "#fabebe",Ignavibacteriae = "#aaffc3",Microgenomates = "#808080",Planctomycetes = "#D14285",Proteobacteria = "#652926",SR1 = "#000080",Synergistetes = "#46f0f0",Tenericutes = "#C84248",Verrucomicrobia = "#8569D5")
+
+names(phylcols)[which(names(phylcols)=="Candidatus_Saccharibacteria")] <- "Candidatus Saccharibacteria"
+names(phylcols)[which(names(phylcols)=="Deinococcus_Thermus")] <- "Deinococcus-Thermus"
+
+## Make the plot
+FW <- ggplot(sigtab_FW, aes(x=Phylum, y=log2FoldChange, colour=Phylum)) +
+          geom_point(size=2) + 
+          geom_hline(yintercept = 0,linetype = 2, colour="gray44")+
+          theme_bw()+
+          theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.title.x = element_blank(),axis.text.y = element_text(size=10))+
+          guides(colour = guide_legend(override.aes = list(shape = 15, size = 5.5, linetype=0), ncol = 1))+
+          theme(legend.text = element_text( size = 10),legend.title = element_text(face="bold"))+
+          ylab("log2FC")+
+          expand_limits(y=c(-7.5,11))+
+          theme(legend.position="none")+
+          ggtitle("DA between age groups at FWB")+
+          scale_colour_manual(values=phylcols)+
+          theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+## Make the plot
+SSB <- ggplot(sigtab_SSB, aes(x=Phylum, y=log2FoldChange, colour=Phylum)) +
+        geom_point(size=2) + 
+        geom_hline(yintercept = 0,linetype = 2, colour="gray44")+
+        theme_bw()+
+        theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.title.x = element_blank(),axis.text.y = element_text(size=10))+
+        guides(colour = guide_legend(override.aes = list(shape = 15, size = 5.5, linetype=0), ncol = 1))+
+        theme(legend.text = element_text( size = 10),legend.title = element_text(face="bold"))+
+        ylab("log2FC")+
+        expand_limits(y=c(-7.5,11))+
+        theme(legend.position="none")+
+        ggtitle("DA between age groups at SSB")+
+        scale_colour_manual(values=phylcols)+
+        theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+## Make the plot
+M <- ggplot(sigtab_M, aes(x=Phylum, y=log2FoldChange, colour=Phylum)) +
+        geom_point(size=2) + 
+        geom_hline(yintercept = 0,linetype = 2, colour="gray44")+
+        theme_bw()+
+        theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(),axis.title.x = element_blank(),axis.text.y = element_text(size=10))+
+        guides(colour = guide_legend(override.aes = list(shape = 15, size = 5.5, linetype=0), ncol = 1))+
+        theme(legend.text = element_text( size = 10),legend.title = element_text(face="bold"))+
+        ylab("log2FC")+
+        expand_limits(y=c(-7.5,11))+
+        scale_colour_manual(values=phylcols)+
+        ggtitle("DA in mothers between beaches")+
+        theme(legend.position="none")+
+        theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+## Make the plot
+P <- ggplot(sigtab_P, aes(x=Phylum, y=log2FoldChange, colour=Phylum)) +
+        geom_point(size=2) + 
+        geom_hline(yintercept = 0,linetype = 2, colour="gray44")+
+        theme_bw()+
+        theme(axis.text.x = element_blank(),axis.ticks.x = element_blank(), axis.title.x = element_blank(),axis.text.y = element_text(size=10))+
+        guides(colour = guide_legend(override.aes = list(shape = 15, size = 5.5, linetype=0), ncol = 1))+
+        theme(legend.text = element_text( size = 10),legend.title = element_text(face="bold"))+
+        ylab("log2FC")+
+        expand_limits(y=c(-7.5,11))+
+        scale_colour_manual(values=phylcols)+
+        ggtitle("DA in pups between beaches")+
+        theme(legend.position="none")+
+        theme(panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+
+plot_grid(M,FW,P,SSB, align = "v",axis="r" ,nrow=2, ncol=2)
+
+```
+<br>
+
+
+### Heatmap of OTU abundance
+
+The OTU abundance for each sample can also be visualised using a heatmap. As input for abundance we use the CSS normalised OTU counts with added pseudocount.
+
+```{r heatmap, message = FALSE, warning = FALSE, fig.cap = "**Figure 15.** Heatmap of OTU abundance. Each column corresponds to one individual and each row corresponds to an OTUs. Abundance is represented by the log transformed CSS normalised OTU counts with added pseudocounts. The horizontal bar above the plot indicates which breeding colony and age group an individual belongs to. The vertical bar on the left-hand side of the plot represents the phylum membership of each OTU.",  fig.height = 11, fig.width = 10}
+
+#library(phyloseq)
+library(phyloseq)
+library(pheatmap)
+library(dplyr)
+
+## Define colours for the heatmap and
+## the colour gradient for abundance
+heatcols <- c("#EFDEC0","#EFBE95", "#E48889", "#DA577C", "#C13177", "#901A81", "#640089", "#480076", "#350155")
+heatmapCols <- colorRampPalette(heatcols)(50)
+
+## Define the phyla colours
+phylcols <- c(Acidobacteria = "#673770",Actinobacteria = "#5F7FC7", Armatimonadetes = "#ffe119", Bacteroidetes = "orange", BRC1 = "#808000",Candidatus_Saccharibacteria = "#DA5724", Chloroflexi = "#3cb44b", Cyanobacteria = "#508578",Deinococcus_Thermus = "#CD9BCD",Firmicutes = "#AD6F3B",Fusobacteria = "#CBD588",Gemmatimonadetes = "#fabebe",Ignavibacteriae = "#aaffc3",Microgenomates = "#808080",Planctomycetes = "#D14285",Proteobacteria = "#652926",SR1 = "#000080",Synergistetes = "#46f0f0",Tenericutes = "#C84248",Verrucomicrobia = "#8569D5",undefined = "lightgrey")
+
+## Correct some names to match the naming in the table 
+names(phylcols)[which(names(phylcols)=="Candidatus_Saccharibacteria")] <- "Candidatus Saccharibacteria"
+names(phylcols)[which(names(phylcols)=="Deinococcus_Thermus")] <- "Deinococcus-Thermus"
+
+## Define the colours used for mothers and pups at each beach
+samplecols <- c(FWB_mothers= "dodgerblue3",FWB_pups = "#d7e4f5", SSB_mothers = "firebrick2", SSB_pups = "#ffd6d7")
+
+## Make a list of the colour vectors for the heatmap function
+ann_colors <- list(Phylum = phylcols, BeachAge = samplecols)
+## Correct the names to match the naming in the table
+names(ann_colors$BeachAge)[which(names(ann_colors$BeachAge)=="FWB_mothers")] <- "FWB mothers"
+names(ann_colors$BeachAge)[which(names(ann_colors$BeachAge)=="FWB_pups")] <- "FWB pups"
+names(ann_colors$BeachAge)[which(names(ann_colors$BeachAge)=="SSB_mothers")] <- "SSB mothers"
+names(ann_colors$BeachAge)[which(names(ann_colors$BeachAge)=="SSB_pups")] <- "SSB pups"
+
+## The abundance will be based on the CSS normalised OTU counts with added pseudocount (input for the beta diversity analysis)
+## Extract the taxonomic information for OTUs from the phyloseq object
+heatmap.tab <- as.data.frame(as(tax_table(phylo.obj)[rownames(metag.norm.counts_log2), ], "matrix"))
+
+## Make a data frame that has the sample meta information about beach and age of the individuals
+## (The rownames have to be present to plot the heatmap)
+colannot <- as.data.frame(meta_data.tab$BeachAge, row.names = rownames(meta_data.tab))
+colnames(colannot) <- "BeachAge"
+levels(colannot$BeachAge) <- c(levels(colannot$BeachAge), "FWB mothers","SSB mothers","FWB pups", "SSB pups" ) 
+colannot$BeachAge[which(colannot$BeachAge=="Freshwater M")] <- "FWB mothers"
+colannot$BeachAge[which(colannot$BeachAge=="Freshwater P")] <- "FWB pups"
+colannot$BeachAge[which(colannot$BeachAge=="SSB M")] <- "SSB mothers"
+colannot$BeachAge[which(colannot$BeachAge=="SSB P")] <- "SSB pups"
+colannot$BeachAge <- droplevels(colannot$BeachAge)
+
+## Make a data frame that contains the phylum information for each OTU 
+## (The rownames have to be present to plot the heatmap)
+rowannot <- as.data.frame(heatmap.tab[,"Phylum"])
+colnames(rowannot) <- "Phylum"
+levels(rowannot$Phylum) <- c(levels(rowannot$Phylum), "undefined") 
+rowannot$Phylum[is.na(rowannot$Phylum)] <- "undefined"
+rowannot$Phylum <- droplevels(rowannot$Phylum)
+
+## Plot the heatmap
+pheatmap::pheatmap(metag.norm.counts_log2, color=heatmapCols, annotation_col=colannot, annotation_row=rowannot, show_rownames = FALSE, annotation_colors=ann_colors, drop_levels= TRUE, fontsize_row = 1, fontsize_col = 4, annotation_names_row=FALSE, annotation_names_col=FALSE)
+
+```
+<br>
+
+### Heterozygosity & bacterial diversity
+
+We want to explore the relationship between heterozygosity and bacterial diversity as it has been suggested that the host can excert some control over its microbial community. We hypothesise that the strength of control over the microbiota depends on the heterozygosity of an individual. Standardised multilocus heterozygosity (sMLH, total number of heterozygous loci in an individual divided by the sum of average observed heterozygosities in the population over the subset of loci successfully typed in the focal individual) was calculated for each individual with inbreedR.
+
+We use LMMs and include interaction terms  to investigate whether the effect of an individual's heterozygosity on alpha diversity is different between the age classes and breeding colonies.
+
+``` {r het alpha models, message = FALSE, warning = FALSE, fig.height = 5, fig.width = 5}
+
+library(inbreedR)
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(MuMIn)
+
+## Calculate individual heterozygozity and correlate with alpha diversity
+
+## Import the preformatted microsatellite table and remove NAs
+msats <- read.table("./AFSmicrobiome_SI_MicrosatelliteGenotypes50_P22removed_colnames_Rinput_DatasetS5.1.txt",header=TRUE,row.names = 1, sep= "\t", na.strings=c("","NA"))
+is.na(msats) <- !msats
+## Convert to inbreedR format
+genos <- inbreedR::convert_raw(msats)  
+## Calculate heterozygosity (sMLH)
+heterozygosity <- inbreedR::sMLH(genos)
+
+## Use the alpha diversity estimates from the alpha_model_unrel.tab
+het_alpha.tab <- as.data.frame(subset(alpha_model_unrel.tab, select=c("Beach","Age","PairID","SampleID","jost1_all","PairID2")))
+heterozygosity <- as.data.frame(heterozygosity)
+heterozygosity["SampleID"] <- rownames(heterozygosity)
+het_alpha.tab <- left_join(het_alpha.tab, heterozygosity, by="SampleID")
+het_alpha.tab["BeachAge"] <- paste(het_alpha.tab$Beach,het_alpha.tab$Age )
+
+## Run LMMs to examine the relationship between heterozygosity and bacterial alpha diversity. We include two interaction terms to investigate if the effect of an individual's heterozygosity on alpha diversity is different between the breeding colonies and the age classes.
+
+## Centre heterozygosity
+het_alpha.tab <- cbind(het_alpha.tab, sHeteroz = scale(het_alpha.tab$heterozygosity,scale=FALSE,center = TRUE))
+
+## Run the full model for FWB
+model_full <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + sHeteroz*Beach + sHeteroz*Age + (1|PairID2), data = het_alpha.tab)
+## Check the residual plots
+plot(model_full)
+qqnorm(resid(model_full))
+## Examine the model output
+summary(model_full)
+## Calculates the marginal (only for fixed effects) and conditional (for all effects) R squared for the LMM
+r.squaredGLMM(model_full)
+
+## Likelihood ratio tests
+## anova does not work if missing data are present. Heterozygosity could not be calculated for one individual due to missing genotypes. This invididual will be removed from the table first. This does not change the results of the model above. 
+het_alpha2.tab <- het_alpha.tab
+het_alpha2.tab <- het_alpha2.tab[-which(is.na(het_alpha2.tab$heterozygosity)),]
+
+full <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + + sHeteroz*Beach + sHeteroz*Age + (1|PairID2),  data = het_alpha2.tab, REML=FALSE)
+## test interaction first. If not significant remove from model
+ageint <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + sHeteroz*Beach + (1|PairID2),  data = het_alpha2.tab, REML=FALSE)
+beachint <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + sHeteroz*Age + (1|PairID2),  data = het_alpha2.tab, REML=FALSE)
+
+anova(full,beachint)
+anova(full,ageint)
+
+
+## refit without interactions
+model_full <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + (1|PairID2), data = het_alpha.tab)
+## Check the residual plots
+plot(model_full)
+qqnorm(resid(model_full))
+## Examine the model output
+summary(model_full)
+## Calculates the marginal (only for fixed effects) and conditional (for all effects) R squared for the LMM
+r.squaredGLMM(model_full)
+
+
+## New full model without interactions
+full <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + (1|PairID2),  data = het_alpha2.tab, REML=FALSE)
+#LRT
+het <- lmer(sqrt(jost1_all) ~ Beach + Age + (1|PairID2),  data = het_alpha2.tab, REML=FALSE)
+beach <- lmer(sqrt(jost1_all) ~ sHeteroz + Age + (1|PairID2),  data = het_alpha2.tab, REML=FALSE)
+age <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + (1|PairID2),  data = het_alpha2.tab, REML=FALSE)
+
+anova(full,het)
+anova(full,beach)
+anova(full,age)
+
+```
+<br>
+<br>
+
+We find that alpha diversity and heterozygosity are significantly correlated, with decreased alpha diversity in more heterozygous individuals. The non-significant interaction terms suggest that the effect does not differ between the age classes and breeding colonies.
+
+<br>
+
+``` {r het alpha plot 2, message = FALSE, warning = FALSE, fig.cap = "**Figure 16.** Relationship between bacterial alpha diversity (effective number of species, square root transformed) and individual heterozygosity (sMLH, centered around the mean). Plotted are the rawdata and regression lines from the LMM (heterozygosity regressed against alpha diversity, while controlling for breeding colony and age and including interaction terms beach x sMLH and age x sMLH). FWB mothers - blue filled circles and solid line, FWB pups - blue empty circles and dashed line, SSB mothers - red filled squares and solid line, SSB pups - red empty squares and dashed line. ",  fig.height = 6, fig.width = 7}
+
+library(ggplot2)
+
+## Draw the plot with separate points and ablines for each group (e.g. FWB mothers) 
+model_full_int <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + sHeteroz*Beach + sHeteroz*Age + (1|PairID2), data = het_alpha.tab)
+#summary(model_full_int)$coefficients
+#                     Estimate Std. Error     t value
+# (Intercept)        8.3743789  0.3350369 24.99539266
+# sHeteroz          -9.8476947  3.8534081 -2.55558055
+# BeachSSB          -1.6847756  0.3935801 -4.28064240
+# AgeP              -0.2879318  0.3681890 -0.78202167
+# sHeteroz:BeachSSB  7.7464112  4.9055802  1.57910193
+# sHeteroz:AgeP     -0.3200377  4.9871232 -0.06417281
+
+intercept_FWB_M <- summary(model_full_int)$coefficients[1,1]
+intercept_SSB_M <- (summary(model_full_int)$coefficients[1,1])+(summary(model_full_int)$coefficients[3,1])
+intercept_FWB_P <- (summary(model_full_int)$coefficients[1,1])+(summary(model_full_int)$coefficients[4,1])
+intercept_SSB_P <- (summary(model_full_int)$coefficients[1,1])+(summary(model_full_int)$coefficients[3,1])+(summary(model_full_int)$coefficients[4,1])
+slope_FWB_M <- summary(model_full_int)$coefficients[2,1]
+slope_SSB_M <- (summary(model_full_int)$coefficients[2,1])+(summary(model_full_int)$coefficients[5,1])
+slope_FWB_P <- (summary(model_full_int)$coefficients[2,1])+(summary(model_full_int)$coefficients[6,1])
+slope_SSB_P <- (summary(model_full_int)$coefficients[2,1])+(summary(model_full_int)$coefficients[5,1])+(summary(model_full_int)$coefficients[6,1])
+
+
+
+ggplot() +
+      geom_point(aes(x=het_alpha.tab$sHeteroz[het_alpha.tab$BeachAge == "SSB P"], y=sqrt(het_alpha.tab$jost1_all[het_alpha.tab$BeachAge == "SSB P"])),colour = "firebrick2",shape=0, size = 2.5) +
+     geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_SSB_P+slope_SSB_P*-0.25), yend = (intercept_SSB_P+slope_SSB_P*0.18)), size = 1 ,linetype="dotdash", colour="firebrick2") +
+      geom_point(aes(x=het_alpha.tab$sHeteroz[het_alpha.tab$BeachAge == "Freshwater P"], y=sqrt(het_alpha.tab$jost1_all[het_alpha.tab$BeachAge == "Freshwater P"])),colour = "dodgerblue3",shape=1, size = 2.5) +
+       geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_FWB_P+slope_FWB_P*-0.25), yend = (intercept_FWB_P+slope_FWB_P*0.18)), size = 1 ,linetype="dotdash", colour="dodgerblue3") +    
+        geom_point(aes(x=het_alpha.tab$sHeteroz[het_alpha.tab$BeachAge == "SSB M"], y=sqrt(het_alpha.tab$jost1_all[het_alpha.tab$BeachAge == "SSB M"])),colour = "firebrick2",shape=15, size = 2.5) +
+         geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_SSB_M+slope_SSB_M*-0.25), yend = (intercept_SSB_M+slope_SSB_M*0.18)), size = 1 , colour="firebrick2") +
+         geom_point(aes(x=het_alpha.tab$sHeteroz[het_alpha.tab$BeachAge == "Freshwater M"], y=sqrt(het_alpha.tab$jost1_all[het_alpha.tab$BeachAge == "Freshwater M"])),colour = "dodgerblue3", shape=19, size = 2.5) +
+          geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_FWB_M+slope_FWB_M*-0.25), yend = (intercept_FWB_M+slope_FWB_M*0.18)), size = 1 , colour="dodgerblue3") + 
+      theme_bw(base_size = 12)+    
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+      theme(axis.text.x = element_text(size=12), axis.title.x = element_text(size=14),axis.text.y = element_text(size=12),axis.title.y = element_text(size=14),plot.margin = unit(c(.5, .5, .5, .5), "cm"))+
+       #scale_x_continuous(breaks=c(seq(from = -0.3, to = 0.25, by = 0.1))) +
+      xlab("Centred sMLH") +
+      ylab("Effective no. of species (sqrt)") 
+
+```
+<br>
+
+We wanted to know if our results could potentially be biased by using the non-normalised OTU table for the calculation of alpha diversity values (despite the strong correlation observed between alpha diversity estimates from the non-normalised and single rarefied OTU table). To this end, we rarefied the OTU table to 10,000 reads per sample 100 times (multiple rarefaction) using the QIIME multiple_rarefactions_even_depth.py script and calculated alpha diversity for each of the rarefied tables. We can now calculate LMMs for each set of alpha diversity values to see how robust the model estimates are to rarefaction. 
+
+``` {r het multi alpha, message = FALSE, warning = FALSE, fig.cap = "**Figure 17.** Relationship between bacterial alpha diversity (effective number of species, square root transformed) and individual heterozygosity (sMLH, centered around the mean). Plotted are the rawdata and regression lines from the LMM (heterozygosity regressed against alpha diversity, while controlling for breeding colony and age and including interaction terms beach x sMLH and age x sMLH). Light grey lines represent regression lines from 100 LMMs for which alpha diversity was calculated for 100 rarefied OTU tables. FWB mothers - blue filled circles and solid line, FWB pups - blue empty circles and dashed line, SSB mothers - red filled squares and solid line, SSB pups - red empty squares and dashed line. ",  fig.height = 6, fig.width = 7}
+
+library(lme4)
+library(MuMIn)
+library(ggplot2)
+
+## Set the alpha diversity values for P24 and P39 to "NA" to make the analysis comparable to the muliple rarefied data set, where these two samples are missing. 
+het_alpha3.tab <- het_alpha.tab
+het_alpha3.tab[c(which(het_alpha3.tab$SampleID=="P39"), which(het_alpha.tab$SampleID=="P24")),]$jost1_all <- NA
+## Run the full model as above
+model_full_int_jost1_all <- lmer(sqrt(jost1_all) ~ sHeteroz + Beach + Age + sHeteroz*Beach + sHeteroz*Age + (1|PairID2), data = het_alpha3.tab)
+
+intercept_FWB_M_j1a <- summary(model_full_int_jost1_all)$coefficients[1,1]
+intercept_SSB_M_j1a <- (summary(model_full_int_jost1_all)$coefficients[1,1])+(summary(model_full_int_jost1_all)$coefficients[3,1])
+intercept_FWB_P_j1a <- (summary(model_full_int_jost1_all)$coefficients[1,1])+(summary(model_full_int_jost1_all)$coefficients[4,1])
+intercept_SSB_P_j1a <- (summary(model_full_int_jost1_all)$coefficients[1,1])+(summary(model_full_int_jost1_all)$coefficients[3,1])+(summary(model_full_int_jost1_all)$coefficients[4,1])
+slope_FWB_M_j1a <- summary(model_full_int_jost1_all)$coefficients[2,1]
+slope_SSB_M_j1a <- (summary(model_full_int_jost1_all)$coefficients[2,1])+(summary(model_full_int_jost1_all)$coefficients[5,1])
+slope_FWB_P_j1a <- (summary(model_full_int_jost1_all)$coefficients[2,1])+(summary(model_full_int_jost1_all)$coefficients[6,1])
+slope_SSB_P_j1a <- (summary(model_full_int_jost1_all)$coefficients[2,1])+(summary(model_full_int_jost1_all)$coefficients[5,1])+(summary(model_full_int_jost1_all)$coefficients[6,1])
+
+## Import the table with 100 alpha diversity estimates per sample
+multi_alpha <- read.table("./AFSmicrobiome_SI_alphaDiversityMultiRaref_Rinput_DatasetS16.txt", header=T, sep= "\t", row.names=1, na.strings=c("","NA"))
+
+## Join the heterozygosity table (without the non-normalised alpha diversity estimates) and the multi estimate table
+multi_alpha2 <- cbind(multi_alpha, SampleID = row.names(multi_alpha))
+multi_alpha2.tab <- dplyr::left_join(het_alpha.tab[,-5], multi_alpha2, by = "SampleID")
+
+## We want to plot the model results for each alpha diversity estimate to get an idea about the level of uncertainty introduced through rarefying the OTU table (i.e. the robustness of the observed correlation between alpha diversity and heterozygosity).
+## First, an empty data frame is created that will be filled with the model outputs. 
+model_outs <- data.frame(matrix(nrow = 8, ncol = 100))
+rownames(model_outs) <- c("intercept_FWB_M", "intercept_SSB_M", "intercept_FWB_P", "intercept_SSB_P", "slope_FWB_M", "slope_SSB_M", "slope_FWB_P", "slope_SSB_P")
+colnames(model_outs) <- as.character(c(0:99))
+
+## For all the alpha diversity estimates run the model and fill the data frame with the model estimates.
+for(i in 0:99){
+  jost <- paste0("jost_",i)
+  model1 <- paste0("lmer(sqrt(",jost,") ~ sHeteroz + Beach + Age + sHeteroz*Beach + sHeteroz*Age + (1|PairID2), data = multi_alpha2.tab)")
+  model_full_int <- eval(parse(text=model1))
+
+  model_outs[which(rownames(model_outs)=="intercept_FWB_M"), which(colnames(model_outs)==i)] <- summary(model_full_int)$coefficients[1,1]
+  model_outs[which(rownames(model_outs)=="intercept_SSB_M"), which(colnames(model_outs)==i)] <- (summary(model_full_int)$coefficients[1,1])+(summary(model_full_int)$coefficients[3,1])
+  model_outs[which(rownames(model_outs)=="intercept_FWB_P"), which(colnames(model_outs)==i)] <- (summary(model_full_int)$coefficients[1,1])+(summary(model_full_int)$coefficients[4,1])
+  model_outs[which(rownames(model_outs)=="intercept_SSB_P"), which(colnames(model_outs)==i)] <- (summary(model_full_int)$coefficients[1,1])+(summary(model_full_int)$coefficients[3,1])+(summary(model_full_int)$coefficients[4,1])
+  model_outs[which(rownames(model_outs)=="slope_FWB_M"), which(colnames(model_outs)==i)] <- summary(model_full_int)$coefficients[2,1]
+  model_outs[which(rownames(model_outs)=="slope_SSB_M"), which(colnames(model_outs)==i)] <- (summary(model_full_int)$coefficients[2,1])+(summary(model_full_int)$coefficients[5,1])
+  model_outs[which(rownames(model_outs)=="slope_FWB_P"), which(colnames(model_outs)==i)] <- (summary(model_full_int)$coefficients[2,1])+(summary(model_full_int)$coefficients[6,1])
+  model_outs[which(rownames(model_outs)=="slope_SSB_P"), which(colnames(model_outs)==i)] <- (summary(model_full_int)$coefficients[2,1])+(summary(model_full_int)$coefficients[5,1])+(summary(model_full_int)$coefficients[6,1])
+}
+
+## First plot the results from the model with non-normalised alpha diversity estimates
+hetplot <- ggplot() +
+  geom_point(aes(x=het_alpha3.tab$sHeteroz[het_alpha3.tab$BeachAge == "SSB P"], y=sqrt(het_alpha3.tab$jost1_all[het_alpha3.tab$BeachAge == "SSB P"])),colour = "firebrick2",shape=0, size = 2.5) +
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_SSB_P_j1a+slope_SSB_P_j1a*-0.25), yend = (intercept_SSB_P_j1a+slope_SSB_P_j1a*0.18)), size = 1 ,linetype="dotdash", colour="firebrick2") +
+  geom_point(aes(x=het_alpha3.tab$sHeteroz[het_alpha3.tab$BeachAge == "Freshwater P"], y=sqrt(het_alpha3.tab$jost1_all[het_alpha3.tab$BeachAge == "Freshwater P"])),colour = "dodgerblue3",shape=1, size = 2.5) +
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_FWB_P_j1a+slope_FWB_P_j1a*-0.25), yend = (intercept_FWB_P_j1a+slope_FWB_P_j1a*0.18)), size = 1 ,linetype="dotdash", colour="dodgerblue3") +    
+  geom_point(aes(x=het_alpha3.tab$sHeteroz[het_alpha3.tab$BeachAge == "SSB M"], y=sqrt(het_alpha3.tab$jost1_all[het_alpha3.tab$BeachAge == "SSB M"])),colour = "firebrick2",shape=15, size = 2.5) +
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_SSB_M_j1a+slope_SSB_M_j1a*-0.25), yend = (intercept_SSB_M_j1a+slope_SSB_M_j1a*0.18)), size = 1 , colour="firebrick2") +
+  geom_point(aes(x=het_alpha3.tab$sHeteroz[het_alpha3.tab$BeachAge == "Freshwater M"], y=sqrt(het_alpha3.tab$jost1_all[het_alpha3.tab$BeachAge == "Freshwater M"])),colour = "dodgerblue3", shape=19, size = 2.5) +
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (intercept_FWB_M_j1a+slope_FWB_M_j1a*-0.25), yend = (intercept_FWB_M_j1a+slope_FWB_M_j1a*0.18)), size = 1 , colour="dodgerblue3") + 
+  theme_bw(base_size = 12)+    
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  theme(axis.text.x = element_text(size=12), axis.title.x = element_text(size=14),axis.text.y = element_text(size=12),axis.title.y = element_text(size=14),plot.margin = unit(c(.5, .5, .5, .5), "cm"))+
+  #scale_x_continuous(breaks=c(seq(from = -0.3, to = 0.25, by = 0.1))) +
+  xlab("Centred sMLH") +
+  ylab("Effective no. of species (sqrt)") 
+
+## Add the results for the 100 alpha diversity estimates calculated for the multiple rarefactions using thin grey lines
+for(i in 1:100){
+hetplot <- hetplot +  
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (model_outs["intercept_SSB_P",i]+model_outs["slope_SSB_P",i]*-0.25), yend = (model_outs["intercept_SSB_P",i]+model_outs["slope_SSB_P",i]*0.18)), size = 0.6, linetype="dotdash", colour="lightgrey") +
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (model_outs["intercept_FWB_P",i]+model_outs["slope_FWB_P",i]*-0.25), yend = (model_outs["intercept_FWB_P",i]+model_outs["slope_FWB_P",i]*0.18)), size = 0.6, linetype="dotdash", colour="lightgrey") +    
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (model_outs["intercept_SSB_M",i]+model_outs["slope_SSB_M",i]*-0.25), yend = (model_outs["intercept_SSB_M",i]+model_outs["slope_SSB_M",i]*0.18)), size = 0.6, colour="lightgrey") +
+  geom_segment(aes(x = -0.25, xend = 0.18, y = (model_outs["intercept_FWB_M",i]+model_outs["slope_FWB_M",i]*-0.25), yend = (model_outs["intercept_FWB_M",i]+model_outs["slope_FWB_M",i]*0.18)), size = 0.6, colour="lightgrey")
+}
+
+## Show plot
+hetplot
+
+```
+<br>
+
+We can see that the estimates derived from the 100 additional models are very similar to the original results, thus rarefying the OTU table has very little influence on the correlation between alpha diversity and heterozygosity. Excluding the two individuals with less than 10,000 reads (P24, P39) has a stronger effect on the estimates but does not change the overall results. 
+
+
+### Identity disequilibrium g2 
+
+We computed the two-locus heterozygosity disequilibrium g2, which assesses the covariance of heterozygosity between markers and tells us something about the correlations between heterozygosity and inbreeding. We calculated g2 using the inbreedR package. 
+
+``` {r g2, message = FALSE, warning = FALSE, fig.cap = "**Figure 18.** Estimation of the two-loci identity disequilibrium g2 from an increasing random subset of loci.",  fig.height = 5, fig.width = 5}
+
+library(inbreedR)
+library(grid)
+
+## Calculate g2 from the genotype data
+g2 <- inbreedR::g2_microsats(genos, nperm = 10000, nboot = 10000, CI = 0.95, verbose=FALSE)
+g2
+
+## Estimate g2 from increasing number of randomly subsampled loci
+## Define the function
+resample_loc_g2 <- function(genos, niter) {
+  nloc <- ncol(genos)
+  all_g2 <- matrix(data = NA, nrow = niter, ncol = nloc-1)
+  
+  for (i in 2:nloc) {
+    for (k in 1:niter) {
+      ind <- sample(1:50, i)
+      gene_sub <- genos[ind]
+      all_g2[k, i-1] <- g2_microsats(gene_sub)$g2
+    }
+  }
+  all_g2
+}
+## Perform the resampling
+resampling_g2 <- resample_loc_g2(genos, niter = 1000)
+## Define a function to summerise the results
+sum_results <- function(resampling_output) {
+  mean_cor <- apply(resampling_output,2,mean, na.rm=T)
+  sd_cor <- apply(resampling_output,2,sd, na.rm=T)
+  se_cor <- sd_cor/(sqrt(nrow(resampling_output)))
+  sum_results <- data.frame(locnum = 1:ncol(resampling_output), 
+                            cormean = mean_cor, corsd = sd_cor, corse = se_cor)
+}
+## Perform the summerising of results
+results_g2 <- sum_results(resampling_g2) 
+
+## Plot the results
+ggplot2::ggplot(results_g2, aes(x = locnum, y = cormean)) +
+        geom_line(size = 0.6, colour = "black") +
+        geom_errorbar(aes(ymin = cormean-corsd, ymax = cormean+corsd),
+                      width=0.8, alpha=0.7, size = 0.8, colour = "black") +
+        geom_point(size = 2, shape = 16) +
+        theme_bw()+
+        theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+        geom_hline(yintercept = 0,linetype = 2, colour="gray44")+
+        theme(axis.title.x = element_text(vjust= -2 ,size = 14), axis.title.y = element_text(vjust=3,size = 14), axis.text.x = element_text(size = 12), axis.text.y = element_text(size = 12)) +
+        ylab("g2") +
+        xlab("Number of loci") +
+        labs(title = "g2 estimated from an increasing number of loci")
+
+```
+<br>
+
+### Locus specific effects (local effects)
+
+We also tested for possible local effects following Szulkin et al. (2010). Using an F-ratio test we compare a model of alpha diversity containing multi locus heterozygosity (MLH – the sum of all single locus heterozygosities over all loci) with a model in which MLH was replaced by separate terms for the heterozygosity of each of the 50 microsatellite loci. Local effects can be identified if the second model explains significantly more variance than the first model. For missing genotypes we replaced specific heterozygosity values with the sample average. 
+
+```{r Szulkin, message = FALSE, warning = FALSE}
+
+## Calculate Heterozygozity and correlate with a-diversity
+ 
+ library(inbreedR)
+ library(dplyr)
+ 
+## The header line needs to be present for this analysis (it was removed for the relatedness calculations).
+ msats <- read.table("./AFSmicrobiome_SI_MicrosatelliteGenotypes50_P22removed_colnames_Rinput_DatasetS5.1.txt",header=TRUE,row.names = 1, sep= "\t", na.strings=c("","NA"))
+ is.na(msats) <- !msats
+ ## Convert to inbreedR format
+ genos <- inbreedR::convert_raw(msats) 
+ 
+ ## To restore column names for genos data frame use column names from msats data frame
+ mnames <- colnames(msats)
+ ## remove every second entry (in genos every marker has only one column)
+ mnames <- mnames[seq(1,length(mnames),2)]
+ colnames(genos) <- mnames
+ 
+ ## replace the missing values for each marker with the average for this marker (column average)
+NA2mean <- function(x) replace(x, is.na(x), mean(x, na.rm = TRUE))
+genosNoNA <- replace(genos, TRUE, lapply(genos, NA2mean))
+## Calculate MLH as H = the sum of hi over L loci, hi = heterozygosity at a single locus i (hi, coded as 0 or 1)
+## and add to data frame
+genosNoNA <- cbind(genosNoNA, MLH = rowSums(genosNoNA))
+genosNoNA <- cbind(genosNoNA, Sample = rownames(genosNoNA))
+## data frame containing alpha diversity estimates 
+alpha <- read.table("./AFSmicrobiome_SI_alphaDiversity_Rinput_DatasetS12.txt", header = TRUE, sep = "\t")
+## Only keep columns with sample names and jost1 estimates for all individuals
+alpha <- subset(alpha, select=c("Sample","jost1_all"))
+## combine both data frames
+genosNoNA2 <- left_join(genosNoNA,alpha)
+row.names(genosNoNA2) <- genosNoNA2$Sample
+
+## Model 1: Regress alpha diversity on MLH using a simple regression
+m1 <- lm(jost1_all ~ MLH, data = genosNoNA2)
+summary(m1)
+## Model 2: Regress alpha diversity on all single-locus heterozygosities hi . . . hL, expressed as one or zero (L being the number of loci), using a multiple regression
+m2 <- lm(jost1_all ~ Pv9 + Hg6.3 + Hg8.10 + Hg1.3 + M11a + PvcA + Zcwb07 + Agaz2 + Ag3 + Agaz6 + OrrFCB7 + Ag2 + OrrFCB2 + Lw10 + Zcwc01 + Agaz5 + ZcwCgDhB.14 + SSL301 + Ag7 + Agt10 + ZcwCgDh4.7 + Zcwe05 + Ag1 + OrrFCB8 + Agt47 + Zcwf07 + ZcwD02 + ZcwCgDh1.8 + Aa4 + ZcCgDh5.8 + Agaz3 + X962.1 + X554.6 + Zcwa12 + PvcE + Zcwb09 + agaz10 + Mang44 + Mang36 + Zcwe03 + Zcwe04 + X101.26 + X928.4b + X507.11 + Zcwa05 + Zcwe12 + ZcwCgDh3.6 + Hg6.1 + Zcwc11 + Lc28, data = genosNoNA2) 
+summary(m2)
+## Test whether the two models differ significantly from each other using an F-ratio test.
+anova(m1,m2)
+# Res.Df   RSS Df Sum of Sq     F Pr(>F)
+# 1     93 90418                          
+# 2     44 43794 49     46624 0.956 0.5627
+
+```
+<br>
+
+The second model does not explain more variance than the first model, thus we find no evidence for local effects. 
+<br>
+
+### PICRUst functional analysis
+
+Lastly, we want to take a look at the potential functional capacity of the Antarctic fur seal skin microbial communities. We run [PICRUSt analysis](#http://picrust.github.io/picrust/) to obtain functional annotations for our 16S amplicon data. To evaluate the prediction accuracy of the PICRUSt results, first the nearest sequenced taxon index (NSTI) is calculated. The NSTI is defined as the sum of phylogenetic distances for each organism in the OTU table to its nearest relative with a sequenced reference genome (measured in substitutions per site and weighted by its frequency in the OTU table). NSTI values between 0.06-0.10 indicate that the PICRUSt predictions reasonably reflect the true functional profiles of the microbial community.
+
+``` {r nsti, message = FALSE, warning = FALSE}
+
+library(dplyr)
+
+## Calculate average NSTI values overall and for each breeding colony to assess reliability of PICRUSt results
+## Import NSTI table (output from PICRUSt)
+nsti.tab <- read.table("./AFSmicrobiome_SI_NSTIvalues_filteredTrimmed_rarefied_Rinput_DatasetS17.txt",header=TRUE, sep= "\t", na.strings=c("","NA"))
+colnames(nsti.tab)[which(colnames(nsti.tab) == 'Sample')] <- 'SampleNames'
+## Create a data frame with beach information for each sample which will be merged with the nsti table
+beach.tab <- subset(meta_data.tab, select=c("Beach", "Age", "SampleNames"))
+## Merge data frames
+nsti.tab <- dplyr::left_join(nsti.tab, beach.tab, by = "SampleNames")
+
+## Caluclate overall NSTI
+paste("Overall NSTI:",  round(mean(nsti.tab$Value),digits=3),"+-",round(sd(nsti.tab$Value),digits=3),"sd")
+paste("Freshwater beach NSTI:",round(mean(nsti.tab[nsti.tab$Beach=="Freshwater",]$Value),digits=3),"+-",round(sd(nsti.tab[nsti.tab$Beach=="Freshwater",]$Value),digits=3),"sd")
+paste("Special study beach NSTI:", round(mean(nsti.tab[nsti.tab$Beach=="SSB",]$Value),digits=3),"+-",round(sd(nsti.tab[nsti.tab$Beach=="SSB",]$Value),digits=3),"sd")
+paste("Mother NSTI:", round(mean(nsti.tab[nsti.tab$Age=="M",]$Value),digits=3),"+-",round(sd(nsti.tab[nsti.tab$Age=="M",]$Value),digits=3),"sd")
+paste("Pup NSTI:", round(mean(nsti.tab[nsti.tab$Age=="P",]$Value),digits=3),"+-",round(sd(nsti.tab[nsti.tab$Age=="P",]$Value),digits=3),"sd")
+
+```
+<br>
+
+After establishing that the functional predictions should be reliable for the Antarctic fur seal microbiome we can perform principal component analysis with the data similar to the analysis that can be done with the STAMP software.
+
+``` {r picrust PCA, message = FALSE, warning = FALSE}
+
+library(dplyr)
+
+## Import the table with functional predictions. The table looks similar to the OTU table but instead for OTUs read counts are given for the different functional categories. Before importing the orginal output table (converted to .txt from .biom) some manual adjustments were done. The first line of the file as well as the "#" at the beginning of the second line were deleted. Any "'" symbols from the category names were removed. In the header line the last column name "KEGG_Pathways" was replace by three column names (Level1,Level2,Level3). All ";" were replaced by "\t".
+pi.tab <- read.table("./AFSmicrobiome_SI_Categorize_by_FunctionL3_FilteredTrimmed_rarefied_Rinput_DatasetS18.txt", sep = "\t",row.names =1, header = TRUE)
+
+## The table rownames correspond to KEGG categories at level 3 (level 1-3 category names can be found in the last three columns of the data frame).
+## Remove rows with all 0 entries (Note: the last 3 columns contain the category names at levels 1-3)
+pi.tab <- pi.tab[-which(rowSums(pi.tab[,1:96])==0),]
+## Transpose the table so that the sample names become the row names 
+piT.tab <- t(pi.tab[,1:96])
+## Log-transform and add pseudocount as above for the beta diversity analysis
+pi_log.tab <- log(piT.tab+0.0001)
+## Substract the log of the pseudocount
+pi_log.tab <- pi_log.tab-(log(0.0001))
+
+## Perform principal componant analysis (PCA). Centre and scale the data to zero mean and unit variance.
+pi_pca <- prcomp(pi_log.tab, center = TRUE, scale. = TRUE)
+## Look at the variance proportions of each PC
+# summary(pi_pca)
+## Extract the first 3 PCS and make a new data frame
+pcsL3.tab <- as.data.frame(pi_pca$x[,1:3])
+## Add a column with sample names to the data frame
+pcsL3.tab["SampleID"] <- rownames(pcsL3.tab)
+## Combine the data frame with the heterozygosity table from above
+pcs_metaL3.tab <- left_join(pcsL3.tab,het_alpha.tab, by="SampleID")
+rownames(pcs_metaL3.tab) <- pcs_metaL3.tab$SampleID
+
+## Repeat the PCA for level2 functional categories.
+## Sum up all read counts at level 2 for each sample
+pi_L2.tab<- aggregate(pi.tab[,1:96], by=list(Level2=pi.tab$Level2), FUN=sum)
+## Add rownames
+row.names(pi_L2.tab) <- pi_L2.tab$Level2
+## Remove the Level2 column (now rownames)
+pi_L2.tab <- pi_L2.tab[,-(which(colnames(pi_L2.tab) == 'Level2'))]
+## All steps as before for level 3
+pi_L2T.tab <- t(pi_L2.tab)
+pi_L2T_log.tab <- log(pi_L2T.tab+0.0001)
+pi_L2T_log.tab <- pi_L2T_log.tab-(log(0.0001))
+piL2_pca <- prcomp(pi_L2T_log.tab, center = TRUE, scale. = TRUE)
+# summary(piL2_pca)
+pcsL2.tab <- as.data.frame(piL2_pca$x[,1:3])
+pcsL2.tab["SampleID"] <- rownames(pcsL2.tab)
+pcs_metaL2.tab <- left_join(pcsL2.tab,het_alpha.tab, by="SampleID")
+rownames(pcs_metaL2.tab) <- pcs_metaL2.tab$SampleID
+
+## Repeat the PCA for level2 functional categories.
+## Sum up all read counts at level 2 for each sample
+pi_L1.tab<- aggregate(pi.tab[,1:96], by=list(Level1=pi.tab$Level1), FUN=sum)
+row.names(pi_L1.tab) <- pi_L1.tab$Level1
+pi_L1.tab <- pi_L1.tab[,-(which(colnames(pi_L1.tab) == 'Level1'))]
+pi_L1T.tab <- t(pi_L1.tab)
+pi_L1T_log.tab <- log(pi_L1T.tab+0.0001)
+pi_L1T_log.tab <- pi_L1T_log.tab-(log(0.0001))
+piL1_pca <- prcomp(pi_L1T_log.tab, center = TRUE, scale. = TRUE)
+# summary(piL1_pca)
+pcsL1.tab <- as.data.frame(piL1_pca$x[,1:3])
+pcsL1.tab["SampleID"] <- rownames(pcsL1.tab)
+pcs_metaL1.tab <- left_join(pcsL1.tab,het_alpha.tab, by="SampleID")
+rownames(pcs_metaL1.tab) <- pcs_metaL1.tab$SampleID
+
+```
+
+
+``` {r picrust PCA plots l3, message = FALSE, warning = FALSE,  fig.cap = "**Figure 19.** Principal component analysis of PICRUSt functional predictions at hierachical level 3.",  fig.height = 5, fig.width = 10}
+
+library(ggplot2)
+library(gridExtra)
+
+## Plot the PCA results for level 3
+L3_PC12 <- ggplot(pcs_metaL3.tab, aes(x=PC1, y=PC2))+
+                geom_point(size=3.5, stroke=1, aes(colour=BeachAge, shape=BeachAge))+
+                scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                theme_bw()+
+                theme(legend.position=c(0.16,0.16),legend.title = element_blank(),legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+                labs(x = "PC1 (61.3% explained variability)", y = "PC2 (13.7% explained variability)")+
+                theme(axis.title.y=element_text(size=12), axis.title.x  = element_text(size=12), axis.text.x=element_text(size=10), axis.text.y  = element_text(size=10))
+
+L3_PC13<-ggplot(pcs_metaL3.tab, aes(x=PC1, y=PC3))+
+                geom_point(size=3.5, stroke=1, aes(colour=BeachAge, shape=BeachAge))+
+                scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                theme_bw()+
+                theme(legend.position="none")+
+                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+                labs(x = "PC1 (61.3% explained variability)", y = "PC3 (5.6% explained variability)")+
+                theme(axis.title.y=element_text(size=12), axis.title.x  = element_text(size=12), axis.text.x=element_text(size=10), axis.text.y  = element_text(size=10))
+
+grid.arrange(L3_PC12, L3_PC13, ncol=2)
+
+```
+<br>
+
+``` {r picrust PCA plots l2, message = FALSE, warning = FALSE,  fig.cap = "**Figure 20.** Principal component analysis of PICRUSt functional predictions at hierachical level 2.",  fig.height = 5, fig.width = 10}
+
+library(ggplot2)
+library(gridExtra)
+
+## Plot the PCA results for level 2
+L2_PC12<-ggplot(pcs_metaL2.tab, aes(x=PC1, y=PC2))+
+                geom_point(size=3.5, stroke=1, aes(colour=BeachAge, shape=BeachAge))+
+                scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                theme_bw()+
+                theme(legend.position="none")+
+                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+                labs(x = "PC1 (78.0% explained variability)", y = "PC2 (12.0% explained variability)")+
+                theme(axis.title.y=element_text(size=12), axis.title.x  = element_text(size=12), axis.text.x=element_text(size=10), axis.text.y  = element_text(size=10))
+
+L2_PC13<-ggplot(pcs_metaL2.tab, aes(x=PC1, y=PC3))+
+                geom_point(size=3.5, stroke=1, aes(colour=BeachAge, shape=BeachAge))+
+                scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                theme_bw()+
+                theme(legend.position=c(0.84,0.84),legend.title = element_blank(),legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+                labs(x = "PC1 (78.0% explained variability)", y = "PC3 (3.5% explained variability)")+
+                theme(axis.title.y=element_text(size=12), axis.title.x  = element_text(size=12), axis.text.x=element_text(size=10), axis.text.y  = element_text(size=10))
+
+grid.arrange(L2_PC12, L2_PC13, ncol=2)
+
+```
+<br>
+
+``` {r picrust PCA plots l1, message = FALSE, warning = FALSE,  fig.cap = "**Figure 21.** Principal component analysis of PICRUSt functional predictions at hierachical level 1.",  fig.height = 5, fig.width = 10}
+
+library(ggplot2)
+library(gridExtra)
+
+## Plot the PCA results for level 1
+L1_PC12<-ggplot(pcs_metaL1.tab, aes(x=PC1, y=PC2))+
+                geom_point(size=3.5, stroke=1, aes(colour=BeachAge, shape=BeachAge))+
+                scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                theme_bw()+
+                theme(legend.position="none")+
+                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+                labs(x = "PC1 (92.1% explained variability)", y = "PC2 (5.5% explained variability)")+
+                theme(axis.title.y=element_text(size=12), axis.title.x  = element_text(size=12), axis.text.x=element_text(size=10), axis.text.y  = element_text(size=10))
+
+L1_PC13<-ggplot(pcs_metaL1.tab, aes(x=PC1, y=PC3))+
+                geom_point(size=3.5, stroke=1, aes(colour=BeachAge, shape=BeachAge))+
+                scale_color_manual(values = c("dodgerblue3","dodgerblue3","firebrick2","firebrick2"),name="",breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                scale_shape_manual(values = c(19,1,15,0), name="", breaks=c("Freshwater M", "Freshwater P", "SSB M", "SSB P"), labels=c("FWB mothers","FWB pups", "SSB mothers", "SSB pups"))+
+                theme_bw()+
+                theme(legend.position=c(0.16,0.16),legend.title = element_blank(),legend.background = element_rect(size=0.3,linetype="solid", colour ="black"))+
+                theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+                labs(x = "PC1 (92.1% explained variability)", y = "PC3 (1.0% explained variability)")+
+                theme(axis.title.y=element_text(size=12), axis.title.x  = element_text(size=12), axis.text.x=element_text(size=10), axis.text.y  = element_text(size=10))
+
+grid.arrange(L1_PC12, L1_PC13, ncol=2)
+
+```
+<br>
+
+### References
+
+Stoffel MA, Caspers BA, Forcada J, et al. (2015) Chemical fingerprints encode mother-offspring similarity, colony membership, relatedness, and genetic quality in fur seals. *Proceedings of the National Academy of Sciences U S A* **112**, E5005-5012.
+
+Szulkin M, Bierne N, David P (2010) Heterozygosity-fitness correlations: a time for reappraisal. *Evolution* **64**, 1202-1217.
+
+
